@@ -10,6 +10,8 @@ The idea is to use this project to build a "fat" executable JAR file which can b
 
 **🌐 Website:** [www.mobilitystudio.de](https://www.mobilitystudio.de)
 
+https://github.com/user-attachments/assets/79ad8f19-e9b0-4a0c-9f58-2f05e3e5b668
+
 <img src="data/screenshot_MobilityStudio.png" width="600" alt="MobilityStudio Screenshot">
 
 ### Building and Running it locally
