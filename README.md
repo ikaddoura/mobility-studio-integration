@@ -2,17 +2,15 @@
 
 <img src="data/studio_app.png" width="120" alt="MobilityStudio Logo">
 
-
-A slightly modified version of the matsim-example-project which uses MATSim as library.
-This project extends MATSim's default GUI by a config editor.
+A slightly modified version of the matsim-example-project which uses MATSim as library. This project extends MATSim's default GUI by a config editor.
 
 The idea is to use this project to build a "fat" executable JAR file which can be embeded in the MobilityStudio application. This allows to open the config editor and to start MATSim runs from within MobilityStudio.
 
 **🌐 Website:** [www.mobilitystudio.de](https://www.mobilitystudio.de)
 
-https://github.com/user-attachments/assets/79ad8f19-e9b0-4a0c-9f58-2f05e3e5b668
 
-<img src="data/screenshot_MobilityStudio.png" width="600" alt="MobilityStudio Screenshot">
+https://github.com/user-attachments/assets/7a7d49d6-3a6b-493f-b13a-5867bb6aab62
+
 
 ### Building and Running it locally
 
