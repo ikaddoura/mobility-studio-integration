@@ -1,4 +1,4 @@
-# MobilityStudio Integration
+# MobilityStudio MATSim Integration
 
 <img src="data/studio_app.png" width="120" alt="MobilityStudio Logo">
 
