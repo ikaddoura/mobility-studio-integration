@@ -50,7 +50,7 @@ Then start the MATSim run.
 
 ---
 
-## 🛠️ Adjust to your needs, build and run Locally
+## 🛠️ Adjust to your needs, build and run locally
 
 You can fork this project and adjust it to your specific needs. You may change the MATSim version, add a MATSim contrib, or add your own customized MATSim run class.
 
