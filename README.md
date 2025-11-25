@@ -81,6 +81,6 @@ java -jar mobility-studio-integration-1.0.0.jar
 ```
 
 
-##📜 Licenses
+## 📜 Licenses
 
 The MATSim program code in this repository is distributed under the terms of the GNU General Public License as published by the Free Software Foundation (version 2). The MATSim program code are files that reside in the src directory hierarchy and typically end with *.java.
