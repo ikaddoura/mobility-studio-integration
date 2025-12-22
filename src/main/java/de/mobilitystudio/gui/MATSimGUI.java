@@ -25,6 +25,7 @@ import org.matsim.core.controler.Controler;
 
 import de.mobilitystudio.run.RunMatsimDefault;
 import de.mobilitystudio.run.RunRailsim;
+import de.mobilitystudio.run.RunSBBPt;
 
 public class MATSimGUI {
 	private static final Logger log = LogManager.getLogger(Controler.class);
@@ -63,11 +64,16 @@ public class MATSimGUI {
 	    	
 	    	} else if (setup.equalsIgnoreCase("railsim")) {
 	    		GuiWithConfigEditor.show("MATSim GUI for railsim", RunRailsim.class );
+	    		
+	    	} else if (setup.equalsIgnoreCase("sbb")) {
+	    		GuiWithConfigEditor.show("MATSim GUI for SBB", RunSBBPt.class );
 	    	
 	    	} else {
-	    		log.error("Unknown setup argument: " + setup + ". Available options are 'default' and 'railsim'. "
-	    				+ "Launching default setup.");
-	    		GuiWithConfigEditor.show("MATSim GUI for a default setup", RunMatsimDefault.class );
+	    		// 1. Log a warning instead of an error, acknowledging it's a custom or unknown setup
+                log.warn("The setup argument '" + setup + "' is not a standard built-in option in the MATSim integration class for MobilityStudio (default, railsim, sbb).");
+                log.warn("Launching in CUSTOM mode using the default runner configuration.");
+	    		
+	    		GuiWithConfigEditor.show("MATSim GUI for a default setup (fallback; setup " + setup + " not implemented)", RunMatsimDefault.class );
 	    	}
 	    } else {
 	    	// No command line arguments: launch the GUI with default setups.

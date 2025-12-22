@@ -1,9 +1,9 @@
 /* *********************************************************************** *
- * project: org.matsim.*												   *
+ * project: org.matsim.*
  *                                                                         *
  * *********************************************************************** *
  *                                                                         *
- * copyright       : (C) 2008 by the members listed in the COPYING,        *
+ * copyright       : (C) 2023 by the members listed in the COPYING,        *
  *                   LICENSE and WARRANTY file.                            *
  * email           : info at matsim dot org                                *
  *                                                                         *
@@ -16,6 +16,7 @@
  *   See also COPYING, LICENSE and WARRANTY file                           *
  *                                                                         *
  * *********************************************************************** */
+
 package de.mobilitystudio.run;
 
 import org.matsim.api.core.v01.Scenario;
@@ -24,7 +25,11 @@ import org.matsim.core.config.ConfigUtils;
 import org.matsim.core.controler.Controler;
 import org.matsim.core.scenario.ScenarioUtils;
 
-public class RunMatsimDefault{
+import ch.sbb.matsim.mobsim.qsim.SBBTransitModule;
+import ch.sbb.matsim.mobsim.qsim.pt.SBBTransitEngineQSimModule;
+import ch.sbb.matsim.routing.pt.raptor.SwissRailRaptorModule;
+
+public final class RunSBBPt {
 
 	public static void main(String[] args) {
 
@@ -35,9 +40,22 @@ public class RunMatsimDefault{
 			config = ConfigUtils.loadConfig( args );
 		}
 		
-		Scenario scenario = ScenarioUtils.loadScenario(config) ;
-		Controler controler = new Controler( scenario ) ;
+		Scenario scenario = ScenarioUtils.loadScenario(config);
+		
+		Controler controler = new Controler(scenario);
+		// To use the deterministic pt simulation (Part 1 of 2):
+        controler.addOverridingModule(new SBBTransitModule());
+
+        // To use the fast pt router (Part 1 of 1)
+        controler.addOverridingModule(new SwissRailRaptorModule());
+
+        // To use the deterministic pt simulation (Part 2 of 2):
+        controler.configureQSimComponents(components -> {
+            new SBBTransitEngineQSimModule().configure(components);
+
+            // if you have other extensions that provide QSim components, call their configure-method here
+        });
+		
 		controler.run();
 	}
-	
 }
