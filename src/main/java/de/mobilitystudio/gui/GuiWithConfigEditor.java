@@ -46,9 +46,20 @@ import javax.swing.SwingUtilities;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
+import org.matsim.api.core.v01.TransportMode;
+import org.matsim.contrib.drt.optimizer.constraints.DrtOptimizationConstraintsSet;
+import org.matsim.contrib.drt.optimizer.constraints.DrtOptimizationConstraintsSetImpl;
+import org.matsim.contrib.drt.optimizer.insertion.DrtInsertionSearchParams;
+import org.matsim.contrib.drt.optimizer.insertion.extensive.ExtensiveInsertionSearchParams;
+import org.matsim.contrib.drt.run.DrtConfigGroup;
+import org.matsim.contrib.drt.run.DrtConfigGroup.OperationalScheme;
+import org.matsim.contrib.drt.run.MultiModeDrtConfigGroup;
+import org.matsim.contrib.dvrp.run.DvrpConfigGroup;
 import org.matsim.core.config.Config;
 import org.matsim.core.config.ConfigUtils;
 import org.matsim.core.config.ConfigWriter;
+import org.matsim.core.config.groups.ScoringConfigGroup;
+import org.matsim.core.config.groups.QSimConfigGroup.StarttimeInterpretation;
 import org.matsim.core.gbl.Gbl;
 import org.matsim.core.utils.io.IOUtils;
 
@@ -156,53 +167,175 @@ public class GuiWithConfigEditor extends JFrame {
 
 			if (result == JFileChooser.APPROVE_OPTION) {
 				File selectedFile = chooser.getSelectedFile();
+				
+				// --- Overwrite warning check ---
+				if (selectedFile.exists()) {
+					int overwriteChoice = JOptionPane.showConfirmDialog(GuiWithConfigEditor.this,
+							"The file '" + selectedFile.getName() + "' already exists.\nDo you want to overwrite it?",
+							"Confirm Overwrite",
+							JOptionPane.YES_NO_OPTION,
+							JOptionPane.WARNING_MESSAGE);
+					
+					if (overwriteChoice != JOptionPane.YES_OPTION) {
+						return; // Stop the creation process if the user clicks "No" or closes the dialog
+					}
+				}
+				// --------------------------------------
+				
 				try {
 					Config newConfig = ConfigUtils.createConfig();
-					// a new config file was created
-					// add the input files we just may have written into the workind directory
-					
 					File parentDir = selectedFile.getParentFile();
+					
+					// === DRT SETUP DETECTION ===
+					// Check if the GUI was launched with the RunDRT class
+					boolean isDrtMode = mainClass != null && mainClass.endsWith("RunDRT");
+					
+					if (isDrtMode) {
+						log.info("DRT mode detected. Adding DVRP and DRT config groups.");
+						
+						// required by drt module...
+						newConfig.qsim().setStartTime(0.);
+						newConfig.qsim().setSimStarttimeInterpretation(StarttimeInterpretation.onlyUseStarttime);
+						
+						//copy all scoring params from pt
+						ScoringConfigGroup.ModeParams ptParams = newConfig.scoring().getModes().get(TransportMode.pt);
+						ScoringConfigGroup.ModeParams modeParams = new ScoringConfigGroup.ModeParams("drt");
+						modeParams.setConstant(ptParams.getConstant());
+						modeParams.setMarginalUtilityOfDistance(ptParams.getMarginalUtilityOfDistance());
+						modeParams.setMarginalUtilityOfTraveling(ptParams.getMarginalUtilityOfTraveling());
+						modeParams.setDailyUtilityConstant(ptParams.getDailyUtilityConstant());
+						
+						modeParams.setMonetaryDistanceRate(ptParams.getMonetaryDistanceRate());
+						modeParams.setDailyMonetaryConstant(ptParams.getDailyMonetaryConstant());
+						
+						newConfig.scoring().addModeParams(modeParams);
+						
+						DvrpConfigGroup dvrpGroup = new DvrpConfigGroup();
+						newConfig.addModule(dvrpGroup);
+						
+						MultiModeDrtConfigGroup multiModeDrtGroup = new MultiModeDrtConfigGroup();
+						newConfig.addModule(multiModeDrtGroup);
+						
+						DrtConfigGroup drtGroup = new DrtConfigGroup();
+						drtGroup.setMode("drt"); // Set a default mode
+						drtGroup.setStopDuration(60.);
+						drtGroup.setDrtInsertionSearchParams(new ExtensiveInsertionSearchParams());
+						
+						DrtOptimizationConstraintsSetImpl optConstraints = drtGroup.addOrGetDrtOptimizationConstraintsParams().addOrGetDefaultDrtOptimizationConstraintsSet();
+						optConstraints.setMaxWaitTime(300.);
+						optConstraints.setMaxTravelTimeBeta(120.);
+						optConstraints.setMaxTravelTimeAlpha(1.7);
+						optConstraints.setMaxWalkDistance(2000.);
+						
+						if (parentDir != null && parentDir.isDirectory()) {
+							
+							// stops
+							if (new File(parentDir, "drtStops.xml.gz").exists()) {
+								log.info("Adding drtStops.xml.gz to DRT config.");
+								drtGroup.setTransitStopFile("drtStops.xml.gz");
+								drtGroup.setOperationalScheme(OperationalScheme.stopbased);
+							}
+							
+							// area
+							if (new File(parentDir, "drt_area.shp").exists()) {
+								log.info("Adding drt_area.shp to DRT config.");
+								drtGroup.setDrtServiceAreaShapeFile("drt_area.shp");
+								drtGroup.setOperationalScheme(OperationalScheme.serviceAreaBased);
+							}
+							
+							// area
+							if (new File(parentDir, "drt_area_1.shp").exists()) {
+								log.info("Adding drt_area_1.shp to DRT config.");
+								drtGroup.setDrtServiceAreaShapeFile("drt_area_1.shp");
+								drtGroup.setOperationalScheme(OperationalScheme.serviceAreaBased);
+							}
+							
+							if (new File(parentDir, "drt_area.gpkg").exists()) {
+								log.info("Adding drt_area.gpkg to DRT config.");
+								drtGroup.setDrtServiceAreaShapeFile("drt_area.gpkg");
+								drtGroup.setOperationalScheme(OperationalScheme.serviceAreaBased);
+							}
+							
+							if (new File(parentDir, "drt_area_1.gpkg").exists()) {
+								log.info("Adding drt_area_1.gpkg to DRT config.");
+								drtGroup.setDrtServiceAreaShapeFile("drt_area_1.gpkg");
+								drtGroup.setOperationalScheme(OperationalScheme.serviceAreaBased);
+							}
+							
+							// drt vehicles
+							if (new File(parentDir, "drtVehicles.xml.gz").exists()) {
+								log.info("Adding drtVehicles.xml.gz to DRT config.");
+								drtGroup.setVehiclesFile("drtVehicles.xml.gz");
+							}
+							
+							if (new File(parentDir, "drt_vehicles.xml.gz").exists()) {
+								log.info("Adding drt_vehicles.xml.gz to DRT config.");
+								drtGroup.setVehiclesFile("drt_vehicles.xml.gz");
+							}
+							
+							if (new File(parentDir, "drtVehicles_1.xml.gz").exists()) {
+								log.info("Adding drtVehicles_1.xml.gz to DRT config.");
+								drtGroup.setVehiclesFile("drtVehicles_1.xml.gz");
+							}
+						}
+						
+						multiModeDrtGroup.addDrtConfigGroup(drtGroup);
+					}
+					
+					// === STANDARD FILES DETECTION ===
 					if (parentDir != null && parentDir.isDirectory()) {
 						
+						// Network
 						String networkFileName = "network.xml.gz";
-						File networkFile = new File(parentDir, networkFileName);
-						if (networkFile.exists()) {
-					    	log.info("Adding network.xml.gz to config.");
+						if (new File(parentDir, networkFileName).exists()) {
+							log.info("Adding network.xml.gz to config.");
 							newConfig.network().setInputFile(networkFileName);
 						}
 						
-						String scheduleFileName = "schedule.xml.gz";
-						String vehiclesFileName = "vehicles.xml.gz";
-						File scheduleFile = new File(parentDir, scheduleFileName);
-						File vehiclesFile = new File(parentDir, vehiclesFileName);
-						if (scheduleFile.exists() && vehiclesFile.exists()) {
-					    	log.info("Adding schedule.xml.gz and vehicles.xml.gz to transit config group.");
+						// Transit (Updated names)
+						String scheduleFileName = "transitSchedule.xml.gz";
+						String transitVehiclesFileName = "transitVehicles.xml.gz";
+						if (new File(parentDir, scheduleFileName).exists() && new File(parentDir, transitVehiclesFileName).exists()) {
+							log.info("Adding transitSchedule.xml.gz and transitVehicles.xml.gz to transit config group.");
 							newConfig.transit().setTransitScheduleFile(scheduleFileName);
-							newConfig.transit().setVehiclesFile(vehiclesFileName);
+							newConfig.transit().setVehiclesFile(transitVehiclesFileName);
 							newConfig.transit().setUsingTransitInMobsim(true);
 							newConfig.transit().setUseTransit(true);
 						}
 						
+						// Population
 						String populationFileName = "population.xml.gz";
-						String facilitiesFileName = "facilities.xml.gz";
-
-						File populationFile = new File(parentDir, populationFileName);
-						File facilitiesFile = new File(parentDir, facilitiesFileName);
-
-						if (populationFile.exists()) {
-					    	log.info("Adding population.xml.gz to config.");
+						if (new File(parentDir, populationFileName).exists()) {
+							log.info("Adding population.xml.gz to config.");
 							newConfig.plans().setInputFile(populationFileName);
-							
-							if (facilitiesFile.exists()) {
-						    	log.info("Adding facilities.xml.gz to config.");
-								newConfig.facilities().setInputFile(facilitiesFileName);
-							}
+						}
+						
+						// Facilities
+						String facilitiesFileName = "facilities.xml.gz";
+						if (new File(parentDir, facilitiesFileName).exists()) {
+							log.info("Adding facilities.xml.gz to config.");
+							newConfig.facilities().setInputFile(facilitiesFileName);
+						}
+						
+						// Normal Vehicles
+						String normalVehiclesFileName = "vehicles.xml.gz";
+						if (new File(parentDir, normalVehiclesFileName).exists()) {
+							log.info("Adding vehicles.xml.gz to config.");
+							newConfig.vehicles().setVehiclesFile(normalVehiclesFileName);
+						}
+						
+						// Counts
+						String countsFileName = "counts.xml.gz";
+						if (new File(parentDir, countsFileName).exists()) {
+							log.info("Adding counts.xml.gz to config.");
+							newConfig.counts().setInputFile(countsFileName);
 						}
 					}
 					
 					new ConfigWriter(newConfig).write(selectedFile.getAbsolutePath());
 					loadConfigFile(selectedFile);
 					lastUsedDirectory = selectedFile.getParentFile();
+					
 				} catch (Exception ex) {
 					JOptionPane.showMessageDialog(GuiWithConfigEditor.this,
 							"Could not save the config file.\n\nError: " + ex.getMessage(),

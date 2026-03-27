@@ -23,6 +23,7 @@ import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.matsim.core.controler.Controler;
 
+import de.mobilitystudio.run.RunDRT;
 import de.mobilitystudio.run.RunMatsimDefault;
 import de.mobilitystudio.run.RunRailsim;
 import de.mobilitystudio.run.RunSBBPt;
@@ -67,6 +68,9 @@ public class MATSimGUI {
 	    		
 	    	} else if (setup.equalsIgnoreCase("sbb")) {
 	    		GuiWithConfigEditor.show("MATSim GUI for SBB", RunSBBPt.class );
+	    		
+	    	} else if (setup.equalsIgnoreCase("drt")) {
+	    		GuiWithConfigEditor.show("MATSim GUI for DRT", RunDRT.class );
 	    	
 	    	} else {
 	    		// 1. Log a warning instead of an error, acknowledging it's a custom or unknown setup
