@@ -20,13 +20,20 @@
 package de.mobilitystudio.gui;
 
 import java.awt.Desktop;
+import java.io.BufferedReader;
 import java.io.File;
+import java.io.FileInputStream;
 import java.io.IOException;
+import java.io.InputStreamReader;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.Optional;
 import java.util.concurrent.Future;
 import java.util.concurrent.FutureTask;
 import java.util.concurrent.RunnableFuture;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+import java.util.zip.GZIPInputStream;
 
 import javax.swing.GroupLayout;
 import javax.swing.GroupLayout.Alignment;
@@ -47,9 +54,7 @@ import javax.swing.SwingUtilities;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.matsim.api.core.v01.TransportMode;
-import org.matsim.contrib.drt.optimizer.constraints.DrtOptimizationConstraintsSet;
 import org.matsim.contrib.drt.optimizer.constraints.DrtOptimizationConstraintsSetImpl;
-import org.matsim.contrib.drt.optimizer.insertion.DrtInsertionSearchParams;
 import org.matsim.contrib.drt.optimizer.insertion.extensive.ExtensiveInsertionSearchParams;
 import org.matsim.contrib.drt.run.DrtConfigGroup;
 import org.matsim.contrib.drt.run.DrtConfigGroup.OperationalScheme;
@@ -58,8 +63,8 @@ import org.matsim.contrib.dvrp.run.DvrpConfigGroup;
 import org.matsim.core.config.Config;
 import org.matsim.core.config.ConfigUtils;
 import org.matsim.core.config.ConfigWriter;
-import org.matsim.core.config.groups.ScoringConfigGroup;
 import org.matsim.core.config.groups.QSimConfigGroup.StarttimeInterpretation;
+import org.matsim.core.config.groups.ScoringConfigGroup;
 import org.matsim.core.gbl.Gbl;
 import org.matsim.core.utils.io.IOUtils;
 
@@ -236,6 +241,24 @@ public class GuiWithConfigEditor extends JFrame {
 								drtGroup.setOperationalScheme(OperationalScheme.stopbased);
 							}
 							
+							if (new File(parentDir, "drt_stops.xml.gz").exists()) {
+								log.info("Adding drt_stops.xml.gz to DRT config.");
+								drtGroup.setTransitStopFile("drt_stops.xml.gz");
+								drtGroup.setOperationalScheme(OperationalScheme.stopbased);
+							}
+							
+							if (new File(parentDir, "stops_drt_1.xml.gz").exists()) {
+								log.info("Adding stops_drt_1.xml.gz to DRT config.");
+								drtGroup.setTransitStopFile("stops_drt_1.xml.gz");
+								drtGroup.setOperationalScheme(OperationalScheme.stopbased);
+							}
+							
+							if (new File(parentDir, "stops_drt.xml.gz").exists()) {
+								log.info("Adding stops_drt.xml.gz to DRT config.");
+								drtGroup.setTransitStopFile("stops_drt.xml.gz");
+								drtGroup.setOperationalScheme(OperationalScheme.stopbased);
+							}
+							
 							// area
 							if (new File(parentDir, "drt_area.shp").exists()) {
 								log.info("Adding drt_area.shp to DRT config.");
@@ -267,6 +290,14 @@ public class GuiWithConfigEditor extends JFrame {
 								log.info("Adding drtVehicles.xml.gz to DRT config.");
 								drtGroup.setVehiclesFile("drtVehicles.xml.gz");
 							}
+							if (new File(parentDir, "vehicles_drt_1.xml.gz").exists()) {
+								log.info("Adding vehicles_drt_1.xml.gz to DRT config.");
+								drtGroup.setVehiclesFile("vehicles_drt_1.xml.gz");
+							}
+							if (new File(parentDir, "vehicles_drt.xml.gz").exists()) {
+								log.info("Adding vehicles_drt.xml.gz to DRT config.");
+								drtGroup.setVehiclesFile("vehicles_drt.xml.gz");
+							}
 							
 							if (new File(parentDir, "drt_vehicles.xml.gz").exists()) {
 								log.info("Adding drt_vehicles.xml.gz to DRT config.");
@@ -287,9 +318,22 @@ public class GuiWithConfigEditor extends JFrame {
 						
 						// Network
 						String networkFileName = "network.xml.gz";
-						if (new File(parentDir, networkFileName).exists()) {
+						
+						File networkFile = new File(parentDir, networkFileName);
+
+						if (networkFile.exists()) {
 							log.info("Adding network.xml.gz to config.");
 							newConfig.network().setInputFile(networkFileName);
+							
+							// Detect CRS (simple approach via file preview...)
+							// Let's assume the network crs is also the global one...
+						    Optional<String> crs = detectCrsFromNetworkFile(networkFile);
+						    if (crs.isPresent()) {
+						        String detectedCrs = crs.get();
+								log.info("Found CRS: " + detectedCrs + ". It can now be used where needed.");
+						        newConfig.global().setCoordinateSystem(detectedCrs); 
+						    }
+						    
 						}
 						
 						// Transit (Updated names)
@@ -634,6 +678,47 @@ public class GuiWithConfigEditor extends JFrame {
 
 		menuBar = new JMenuBar();
 		setJMenuBar(menuBar);
+	}
+	
+	/**
+	 * Tries to detect the Coordinate Reference System (CRS) by scanning the first few
+	 * lines of a MATSim network file without parsing the whole XML.
+	 *
+	 * @param networkFile The gzipped network.xml.gz file.
+	 * @return An Optional containing the CRS string if found, otherwise an empty Optional.
+	 */
+	private Optional<String> detectCrsFromNetworkFile(File networkFile) {
+	    // We will only scan the first few lines for efficiency.
+	    final int LINES_TO_SCAN = 50;
+
+	    // A regex pattern to find the CRS attribute and capture its value.
+	    // It looks for: <attribute name="coordinateReferenceSystem" ...>VALUE</attribute>
+	    final Pattern crsPattern = Pattern.compile(
+	        "<attribute\\s+name=\"coordinateReferenceSystem\"[^>]*>([^<]+)</attribute>"
+	    );
+
+	    // Use try-with-resources to ensure streams are closed automatically
+	    try (FileInputStream fis = new FileInputStream(networkFile);
+	         GZIPInputStream gzis = new GZIPInputStream(fis);
+	         BufferedReader reader = new BufferedReader(new InputStreamReader(gzis))) {
+
+	        String line;
+	        for (int i = 0; i < LINES_TO_SCAN && (line = reader.readLine()) != null; i++) {
+	            Matcher matcher = crsPattern.matcher(line.trim());
+	            if (matcher.find()) {
+	                // Group 1 contains the text captured by the parentheses in the pattern
+	                String crsValue = matcher.group(1);
+	                log.info("Detected Coordinate Reference System '" + crsValue + "' from network file header.");
+	                return Optional.of(crsValue);
+	            }
+	        }
+
+	    } catch (IOException e) {
+	        log.warn("Could not read network file header to detect CRS: " + networkFile.getAbsolutePath(), e);
+	    }
+
+	    log.info("CRS attribute not found in the first " + LINES_TO_SCAN + " lines of the network file.");
+	    return Optional.empty();
 	}
 	
 	private void updateGuiWithConfig(Config config, File configFile) {
