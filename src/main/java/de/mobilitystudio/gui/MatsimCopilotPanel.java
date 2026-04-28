@@ -61,6 +61,9 @@ import javax.swing.text.StyledDocument;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.node.ObjectNode;
+
 /**
  * "MATSim Copilot" – a chat-based AI assistant that reads the current
  * stdout / stderr (log) of the running MATSim simulation and helps the user
@@ -91,9 +94,20 @@ public class MatsimCopilotPanel extends JPanel {
     private static final String PREF_SETTINGS_VISIBLE = "copilot.settings.visible";
     private static final String PREF_INCLUDE_LOG = "copilot.include.log";
     private static final String PREF_INCLUDE_CONFIG = "copilot.include.config";
+    private static final String PREF_MODE = "copilot.mode";
+    private static final String PREF_AUTO_APPROVE = "copilot.agent.autoApprove";
 
     private static final int MAX_LOG_CHARS = 12_000;
     private static final int MAX_CONFIG_CHARS = 60_000;
+
+    /** Operating mode of the copilot. */
+    private enum Mode {
+        CHAT("\uD83D\uDCAC Chat"),
+        AGENT("\uD83E\uDD16 Agent");
+        final String label;
+        Mode(String label) { this.label = label; }
+        @Override public String toString() { return label; }
+    }
 
     /** Provider definitions. */
     private enum Provider {
@@ -135,11 +149,13 @@ public class MatsimCopilotPanel extends JPanel {
             .connectTimeout(Duration.ofSeconds(15)).build();
 
     private final JComboBox<Provider> providerBox = new JComboBox<>(Provider.values());
+    private final JComboBox<Mode> modeBox = new JComboBox<>(Mode.values());
     private final JComboBox<String> modelBox = new JComboBox<>();
     private final JPasswordField apiKeyField = new JPasswordField(28);
     private final JButton saveKeyBtn = new JButton("Save");
     private final JCheckBox includeLogBox = new JCheckBox("Send recent log/error output as context", true);
     private final JCheckBox includeConfigBox = new JCheckBox("Send selected configuration file as context", false);
+    private final JCheckBox autoApproveBox = new JCheckBox("Agent: auto-approve all actions (\u26A0 risky)", false);
     private final JButton settingsToggle = new JButton("\u2699 Settings \u25BC");
     private JPanel settingsPanel;
     private final JTextPane chatPane = new JTextPane();
@@ -147,17 +163,23 @@ public class MatsimCopilotPanel extends JPanel {
     private final JButton sendBtn = new JButton("Send  (Ctrl+Enter)");
     private final JButton explainErrorBtn = new JButton("Explain last error");
     private final JButton clearBtn = new JButton("New chat");
+    private final JButton stopAgentBtn = new JButton("Stop agent");
     private final JLabel statusLabel = new JLabel(" ");
 
     private final JTextArea stdOutSource;
     private final JTextArea stdErrSource;
     private Supplier<File> configFileSupplier = () -> null;
+    private MatsimAgentTools.RunController runController;
 
     /** Suppress side effects (saving to prefs) while we programmatically populate the combo boxes. */
     private boolean suppressEvents = false;
 
-    /** Conversation history (role, content). */
+    /** Conversation history for chat mode (role, content). */
     private final List<Map.Entry<String, String>> history = new ArrayList<>();
+    /** Persistent Gemini conversation for agent mode (raw "contents" entries). */
+    private final List<ObjectNode> agentContents = new ArrayList<>();
+    /** When non-null, the user has asked to cancel the running agent loop. */
+    private volatile boolean agentCancelRequested = false;
 
     public MatsimCopilotPanel(JTextArea stdOutSource, JTextArea stdErrSource) {
         this.stdOutSource = stdOutSource;
@@ -167,9 +189,12 @@ public class MatsimCopilotPanel extends JPanel {
         appendSystem(
                 "Hi, I am the MATSim Copilot. \uD83E\uDD16\n"
                         + "Open \u2699 Settings to pick a provider and enter your API key (saved locally).\n"
-                        + "By default I receive the latest log lines so I can help interpret warnings\n"
-                        + "and errors. You can also send the selected config file as additional context.\n\n"
-                        + "Tip: use the button \"Explain last error\" right after a failed run.\n");
+                        + "Use the Mode dropdown to switch between:\n"
+                        + "   \uD83D\uDCAC Chat  - I read your log/config and answer questions.\n"
+                        + "   \uD83E\uDD16 Agent - I can also edit the config and start/stop MATSim runs\n"
+                        + "             (each destructive action asks for your approval).\n"
+                        + "             Agent mode currently requires the 'Google Gemini' provider.\n\n"
+                        + "Tip: in Chat mode, use the button \"Explain last error\" right after a failed run.\n");
     }
 
     /**
@@ -178,6 +203,15 @@ public class MatsimCopilotPanel extends JPanel {
      */
     public void setConfigFileSupplier(Supplier<File> supplier) {
         this.configFileSupplier = supplier != null ? supplier : (() -> null);
+    }
+
+    /**
+     * Provide a {@link MatsimAgentTools.RunController} so the agent can start/stop the
+     * running MATSim simulation. May be {@code null} – then the agent will simply
+     * report that it cannot run simulations.
+     */
+    public void setRunController(MatsimAgentTools.RunController controller) {
+        this.runController = controller;
     }
 
     // ------------------------------------------------------------------ UI
@@ -194,8 +228,11 @@ public class MatsimCopilotPanel extends JPanel {
         settingsToggle.setBorderPainted(false);
         settingsToggle.setContentAreaFilled(false);
         topBar.add(settingsToggle);
+        topBar.add(new JLabel("Mode:"));
+        topBar.add(modeBox);
         topBar.add(includeLogBox);
         topBar.add(includeConfigBox);
+        topBar.add(autoApproveBox);
         header.add(topBar, BorderLayout.NORTH);
 
         settingsPanel = new JPanel(new GridBagLayout());
@@ -240,8 +277,12 @@ public class MatsimCopilotPanel extends JPanel {
         actions.add(Box.createHorizontalStrut(20));
         actions.add(clearBtn);
         actions.add(explainErrorBtn);
+        actions.add(stopAgentBtn);
         actions.add(sendBtn);
         bottom.add(actions, BorderLayout.SOUTH);
+
+        stopAgentBtn.setVisible(false);
+        stopAgentBtn.setToolTipText("Cancel the agent's loop after the current tool call.");
 
         JSplitPane split = new JSplitPane(JSplitPane.VERTICAL_SPLIT, chatScroll, bottom);
         split.setResizeWeight(0.75);
@@ -267,13 +308,25 @@ public class MatsimCopilotPanel extends JPanel {
         });
         includeLogBox.addActionListener(e -> prefs.putBoolean(PREF_INCLUDE_LOG, includeLogBox.isSelected()));
         includeConfigBox.addActionListener(e -> prefs.putBoolean(PREF_INCLUDE_CONFIG, includeConfigBox.isSelected()));
+        autoApproveBox.addActionListener(e -> prefs.putBoolean(PREF_AUTO_APPROVE, autoApproveBox.isSelected()));
+        modeBox.addActionListener(e -> {
+            Mode m = (Mode) modeBox.getSelectedItem();
+            if (m == null) return;
+            prefs.put(PREF_MODE, m.name());
+            updateModeUi();
+        });
         saveKeyBtn.addActionListener(e -> saveCurrentKey());
         sendBtn.addActionListener(e -> onSend());
         explainErrorBtn.addActionListener(e -> onExplainError());
         clearBtn.addActionListener(e -> {
             history.clear();
+            agentContents.clear();
             chatPane.setText("");
             appendSystem("New chat started.\n");
+        });
+        stopAgentBtn.addActionListener(e -> {
+            agentCancelRequested = true;
+            statusLabel.setText("Cancelling agent…");
         });
 
         // Ctrl+Enter to send
@@ -339,6 +392,33 @@ public class MatsimCopilotPanel extends JPanel {
         onProviderChanged();
         includeLogBox.setSelected(prefs.getBoolean(PREF_INCLUDE_LOG, true));
         includeConfigBox.setSelected(prefs.getBoolean(PREF_INCLUDE_CONFIG, false));
+        autoApproveBox.setSelected(prefs.getBoolean(PREF_AUTO_APPROVE, false));
+
+        String savedMode = prefs.get(PREF_MODE, Mode.CHAT.name());
+        try {
+            modeBox.setSelectedItem(Mode.valueOf(savedMode));
+        } catch (Exception ignore) {
+            modeBox.setSelectedItem(Mode.CHAT);
+        }
+        updateModeUi();
+    }
+
+    /** Updates labels/visibility/tooltips that depend on the current {@link Mode}. */
+    private void updateModeUi() {
+        Mode m = (Mode) modeBox.getSelectedItem();
+        boolean agent = m == Mode.AGENT;
+        autoApproveBox.setVisible(agent);
+        // includeLogBox / includeConfigBox are only meaningful in chat mode – the agent
+        // pulls log and config itself via tools.
+        includeLogBox.setVisible(!agent);
+        includeConfigBox.setVisible(!agent);
+        sendBtn.setText(agent ? "Run agent  (Ctrl+Enter)" : "Send  (Ctrl+Enter)");
+        explainErrorBtn.setVisible(!agent);
+        if (agent) {
+            inputArea.setToolTipText("Describe a goal for the agent (e.g. 'reduce lastIteration to 5 and run the simulation').");
+        } else {
+            inputArea.setToolTipText("Ask a question about your MATSim run.");
+        }
     }
 
     // ------------------------------------------------------------------ chat
@@ -347,7 +427,12 @@ public class MatsimCopilotPanel extends JPanel {
         String text = inputArea.getText().trim();
         if (text.isEmpty()) return;
         inputArea.setText("");
-        sendUserMessage(text, true);
+        Mode m = (Mode) modeBox.getSelectedItem();
+        if (m == Mode.AGENT) {
+            runAgentTurn(text);
+        } else {
+            sendUserMessage(text, true);
+        }
     }
 
     private void onExplainError() {
@@ -524,6 +609,167 @@ public class MatsimCopilotPanel extends JPanel {
         return a;
     }
 
+    // -------------------------------------------------------------- agent mode
+
+    /** Runs one turn of the Gemini agent in a background thread. */
+    private void runAgentTurn(String userText) {
+        Provider p = (Provider) providerBox.getSelectedItem();
+        String model = (String) modelBox.getSelectedItem();
+        if (p == null || model == null) return;
+        if (p != Provider.GEMINI) {
+            JOptionPane.showMessageDialog(this,
+                    "Agent mode currently supports the 'Google Gemini' provider only.\n"
+                            + "Please switch the provider, or use Chat mode.",
+                    "Agent mode unavailable", JOptionPane.WARNING_MESSAGE);
+            return;
+        }
+        String apiKey = new String(apiKeyField.getPassword()).trim();
+        if (apiKey.isEmpty()) {
+            JOptionPane.showMessageDialog(this,
+                    "Please enter and save a Gemini API key first.",
+                    "API key missing", JOptionPane.WARNING_MESSAGE);
+            return;
+        }
+        if (configFileSupplier.get() == null) {
+            JOptionPane.showMessageDialog(this,
+                    "Please load a MATSim configuration file in the GUI first - the agent needs "
+                            + "a scenario directory to operate in.",
+                    "No config loaded", JOptionPane.WARNING_MESSAGE);
+            return;
+        }
+
+        appendUser(userText);
+        agentCancelRequested = false;
+
+        sendBtn.setEnabled(false);
+        explainErrorBtn.setEnabled(false);
+        stopAgentBtn.setVisible(true);
+        stopAgentBtn.setEnabled(true);
+        statusLabel.setText("Agent: working…");
+
+        MatsimAgentTools tools = new MatsimAgentTools(
+                configFileSupplier, stdOutSource, stdErrSource, runController, this::approveOnEdt);
+
+        GeminiAgent agent = new GeminiAgent(http, p.defaultEndpoint, model, apiKey, tools, AGENT_SYSTEM_PROMPT);
+
+        GeminiAgent.ProgressListener listener = new GeminiAgent.ProgressListener() {
+            @Override public void onToolCall(String name, JsonNode args) {
+                javax.swing.SwingUtilities.invokeLater(() -> appendToolCall(name, args));
+            }
+            @Override public void onToolResult(String name, JsonNode result) {
+                javax.swing.SwingUtilities.invokeLater(() -> appendToolResult(name, result));
+            }
+            @Override public void onModelText(String text) {
+                javax.swing.SwingUtilities.invokeLater(() -> appendAgentThought(text));
+            }
+        };
+
+        new SwingWorker<String, Void>() {
+            @Override protected String doInBackground() throws Exception {
+                if (agentCancelRequested) return "[cancelled before start]";
+                return agent.runTurn(agentContents, userText, listener);
+            }
+            @Override protected void done() {
+                String reply;
+                try {
+                    reply = get();
+                } catch (Exception ex) {
+                    log.warn("Agent error", ex);
+                    reply = "[Agent error] " + ex.getMessage();
+                }
+                appendAgentFinal(reply);
+                statusLabel.setText(" ");
+                sendBtn.setEnabled(true);
+                explainErrorBtn.setEnabled(true);
+                stopAgentBtn.setVisible(false);
+                agentCancelRequested = false;
+            }
+        }.execute();
+    }
+
+    /**
+     * Approval gateway used by {@link MatsimAgentTools}. Always invoked from the worker
+     * thread, so we hop to the EDT for the dialog and wait for the result.
+     */
+    private boolean approveOnEdt(String toolName, String details) {
+        if (agentCancelRequested) return false;
+        if (autoApproveBox.isSelected()) return true;
+
+        final boolean[] result = new boolean[] { false };
+        try {
+            Runnable r = () -> {
+                int choice = JOptionPane.showOptionDialog(this,
+                        "The agent wants to perform a destructive action:\n\n"
+                                + toolName + "\n\n" + details
+                                + "\n\nAllow this action?",
+                        "Agent approval needed",
+                        JOptionPane.DEFAULT_OPTION,
+                        JOptionPane.QUESTION_MESSAGE,
+                        null,
+                        new Object[] { "Deny", "Allow" }, "Deny");
+                result[0] = (choice == 1);
+            };
+            if (javax.swing.SwingUtilities.isEventDispatchThread()) r.run();
+            else javax.swing.SwingUtilities.invokeAndWait(r);
+        } catch (Exception ex) {
+            log.warn("Approval dialog failed", ex);
+            return false;
+        }
+        return result[0];
+    }
+
+    private void appendToolCall(String name, JsonNode args) {
+        appendStyled("\u2192 ", new Color(0x884400), true);
+        appendStyled(MatsimAgentTools.describeCall(name, args) + "\n", new Color(0x884400), false);
+    }
+
+    private void appendToolResult(String name, JsonNode result) {
+        boolean isErr = result != null && result.has("error");
+        Color col = isErr ? new Color(0xCC0000) : new Color(0x666666);
+        String summary;
+        if (isErr) {
+            summary = "  \u2715 " + name + ": " + result.path("error").asText();
+        } else {
+            summary = "  \u2713 " + name + ": " + summariseResult(result);
+        }
+        appendStyled(summary + "\n", col, false);
+    }
+
+    private static String summariseResult(JsonNode result) {
+        if (result == null || result.isNull()) return "ok";
+        // Pick a few telling fields, otherwise show field-name overview.
+        if (result.has("exit_code"))   return "exit_code=" + result.get("exit_code").asInt();
+        if (result.has("timed_out") && result.get("timed_out").asBoolean()) return "timed out";
+        if (result.has("started"))     return "started=" + result.get("started").asBoolean();
+        if (result.has("stopped"))     return "stopped=" + result.get("stopped").asBoolean();
+        if (result.has("bytes_written")) return result.get("bytes_written").asInt() + " bytes written";
+        if (result.has("entries"))     return result.get("entries").size() + " entries";
+        if (result.has("size"))        return result.get("size").asInt() + " bytes";
+        if (result.has("content")) {
+            int len = result.get("content").asText("").length();
+            return len + " chars";
+        }
+        StringBuilder sb = new StringBuilder("{");
+        boolean first = true;
+        for (java.util.Iterator<String> it = result.fieldNames(); it.hasNext(); ) {
+            if (!first) sb.append(", ");
+            sb.append(it.next());
+            first = false;
+        }
+        return sb.append('}').toString();
+    }
+
+    private void appendAgentThought(String text) {
+        if (text == null || text.isBlank()) return;
+        appendStyled("\u270F ", new Color(0x556677), true);
+        appendStyled(text.trim() + "\n", new Color(0x556677), false);
+    }
+
+    private void appendAgentFinal(String text) {
+        appendStyled("Agent: ", new Color(0x008060), true);
+        appendStyled((text == null ? "" : text) + "\n\n", null, false);
+    }
+
     // ------------------------------------------------------- provider calls
 
     private static final String SYSTEM_PROMPT =
@@ -533,6 +779,23 @@ public class MatsimCopilotPanel extends JPanel {
             + "Be concise, use bullet points, and reference the relevant lines from the log "
             + "when helpful. If the user did not provide a log, answer based on general MATSim "
             + "knowledge.";
+
+    private static final String AGENT_SYSTEM_PROMPT =
+            "You are MATSim Copilot in AGENT mode. You can call tools to inspect and edit the "
+            + "user's MATSim scenario and to start/stop the simulation:\n"
+            + "  - tail_log, read_config, list_dir, read_file: read-only inspection.\n"
+            + "  - write_config: overwrite the active config XML (a .bak is created automatically).\n"
+            + "  - start_matsim / wait_for_run / stop_matsim: control the running MATSim process.\n\n"
+            + "Workflow guidelines:\n"
+            + "  1. Always inspect (read_config, tail_log) before proposing or applying changes.\n"
+            + "  2. When write_config is needed, return the FULL new XML content (no diff/patch).\n"
+            + "     Make the smallest change required and preserve all other parameters.\n"
+            + "  3. After write_config, you may start_matsim and then wait_for_run to verify.\n"
+            + "  4. start_matsim, write_config and stop_matsim require user approval - briefly "
+            + "     justify them in the 'reason' argument.\n"
+            + "  5. Never invent file paths; use list_dir / read_file to discover them.\n"
+            + "  6. Stop after the user's goal is met and reply with a short summary of what you "
+            + "     changed and what the result was.";
 
     private String callProvider(Provider p, String model, String apiKey,
                                 List<Map.Entry<String, String>> hist) throws IOException, InterruptedException {
