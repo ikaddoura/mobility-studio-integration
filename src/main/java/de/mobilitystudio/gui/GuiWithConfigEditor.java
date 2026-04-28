@@ -674,6 +674,10 @@ public class GuiWithConfigEditor extends JFrame {
 		textErrOut.setEditable(false);
 		scrollPane_1.setViewportView(textErrOut);
 
+		// MATSim Copilot tab – AI assistant that can read the current log/error output
+		MatsimCopilotPanel copilotPanel = new MatsimCopilotPanel(textStdOut, textErrOut);
+		tabbedPane.addTab("\uD83E\uDD16 MATSim Copilot", null, copilotPanel, "Chat with an AI assistant that reads your MATSim log");
+
 		getContentPane().setLayout(groupLayout);
 
 		menuBar = new JMenuBar();
