@@ -2,7 +2,7 @@
 
 <img src="data/studio_app.png" width="120" alt="MobilityStudio Logo">
 
-This project is a slightly modified version of the `matsim-example-project`, utilizing MATSim as a library. It extends MATSim's default Graphical User Interface (GUI) by adding a dedicated configuration editor.
+This project is a slightly modified version of the `matsim-example-project`, utilizing MATSim as a library. It extends MATSim's default Graphical User Interface (GUI) by adding a dedicated configuration editor and an AI integration "MATSim Copilot".
 
 The primary goal is to build a "fat" executable JAR file that can be embedded directly into the **MobilityStudio** application. This integration allows users to open the MATSim configuration editor and launch MATSim simulation runs seamlessly from within the MobilityStudio environment.
 
@@ -83,4 +83,4 @@ java -jar mobility-studio-integration-1.0.0.jar
 
 ## 📜 Licenses
 
-The MATSim program code in this repository is distributed under the terms of the GNU General Public License as published by the Free Software Foundation (version 2). The MATSim program code are files that reside in the src directory hierarchy and typically end with *.java.
+The MATSim program code in this repository is distributed under the terms of the GNU General Public License as published by the Free Software Foundation (version 2 or any later version). The MATSim program code are files that reside in the src directory hierarchy and typically end with *.java.
