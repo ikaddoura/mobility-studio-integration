@@ -88,7 +88,6 @@ public class MatsimCopilotPanel extends JPanel {
     private static final String PREF_PROVIDER = "copilot.provider";
     private static final String PREF_MODEL = "copilot.model.";
     private static final String PREF_KEY = "copilot.apikey.";
-    private static final String PREF_ENDPOINT = "copilot.endpoint.";
     private static final String PREF_SETTINGS_VISIBLE = "copilot.settings.visible";
     private static final String PREF_INCLUDE_LOG = "copilot.include.log";
     private static final String PREF_INCLUDE_CONFIG = "copilot.include.config";
