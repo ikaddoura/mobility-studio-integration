@@ -81,7 +81,7 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
  * The API key is stored per provider via {@link Preferences}
  * ({@code userNodeForPackage(MatsimCopilotPanel.class)}).
  *
- * @author ikaddoura / GitHub Copilot
+ * @author ikaddoura / Claude
  */
 public class MatsimCopilotPanel extends JPanel {
 
@@ -123,8 +123,11 @@ public class MatsimCopilotPanel extends JPanel {
                 new String[] { "openai/gpt-4o", "anthropic/claude-sonnet-4", "google/gemini-2.5-pro",
                         "meta-llama/llama-3.3-70b-instruct", "mistralai/mistral-large" },
                 true),
-        OLLAMA("Ollama (local)", "http://localhost:11434/api/chat",
-                new String[] { "llama3.2", "llama3.1", "qwen2.5-coder", "mistral", "phi3" }, false);
+        OLLAMA("Ollama (local)", "http://localhost:11434/v1/chat/completions",
+                new String[] { "qwen2.5-coder:14b", "qwen2.5-coder:7b", "llama3.2", "llama3.1",
+                        "mistral", "phi3", "hermes3" }, false),
+        JLAMA("Embedded (Java)", "jlama://local",
+                JlamaService.DEFAULT_MODELS, false);
 
         final String label;
         final String defaultEndpoint;
@@ -178,6 +181,8 @@ public class MatsimCopilotPanel extends JPanel {
     private final List<Map.Entry<String, String>> history = new ArrayList<>();
     /** Persistent Gemini conversation for agent mode (raw "contents" entries). */
     private final List<ObjectNode> agentContents = new ArrayList<>();
+    /** Persistent OpenAI-style conversation for agent mode (messages[] entries). */
+    private final List<ObjectNode> agentMessages = new ArrayList<>();
     /** When non-null, the user has asked to cancel the running agent loop. */
     private volatile boolean agentCancelRequested = false;
 
@@ -193,7 +198,9 @@ public class MatsimCopilotPanel extends JPanel {
                         + "   \uD83D\uDCAC Chat  - I read your log/config and answer questions.\n"
                         + "   \uD83E\uDD16 Agent - I can also edit the config and start/stop MATSim runs\n"
                         + "             (each destructive action asks for your approval).\n"
-                        + "             Agent mode currently requires the 'Google Gemini' provider.\n\n"
+                        + "             Agent mode supports: Google Gemini, OpenAI, OpenRouter, Ollama (local).\n\n"
+                        + "Providers needing no install: \"Embedded (Java)\" runs a small LLM directly in this\n"
+                        + "JVM via JLama (downloads ~1 GB model on first use, chat-only).\n\n"
                         + "Tip: in Chat mode, use the button \"Explain last error\" right after a failed run.\n");
     }
 
@@ -246,6 +253,7 @@ public class MatsimCopilotPanel extends JPanel {
         c.gridx = 1; settingsPanel.add(providerBox, c);
         c.gridx = 2; settingsPanel.add(new JLabel("Model:"), c);
         c.gridx = 3; c.weightx = 1; settingsPanel.add(modelBox, c);
+        modelBox.setEditable(true); // allow free typing of model names (esp. for Ollama)
         c.weightx = 0;
 
         c.gridx = 0; c.gridy = 1; settingsPanel.add(new JLabel("API key:"), c);
@@ -321,6 +329,7 @@ public class MatsimCopilotPanel extends JPanel {
         clearBtn.addActionListener(e -> {
             history.clear();
             agentContents.clear();
+            agentMessages.clear();
             chatPane.setText("");
             appendSystem("New chat started.\n");
         });
@@ -351,12 +360,25 @@ public class MatsimCopilotPanel extends JPanel {
         // overwrite our preference with the default.
         String savedModel = prefs.get(PREF_MODEL + p.name(), p.models[0]);
 
+        // For Ollama, try to discover the locally-installed models and offer those instead
+        // of the hard-coded defaults; fall back silently if the server is not reachable.
+        String[] modelList = p.models;
+        if (p == Provider.OLLAMA) {
+            String[] installed = fetchOllamaModels();
+            if (installed != null && installed.length > 0) modelList = installed;
+        }
+
         boolean prev = suppressEvents;
         suppressEvents = true;
         try {
             modelBox.removeAllItems();
-            for (String m : p.models) modelBox.addItem(m);
+            for (String m : modelList) modelBox.addItem(m);
             modelBox.setSelectedItem(savedModel);
+            // If the saved model isn't in the (live) list, keep it as a free entry
+            // so the user can still pick / type something else later.
+            if (modelBox.getSelectedItem() == null && modelList.length > 0) {
+                modelBox.setSelectedItem(modelList[0]);
+            }
         } finally {
             suppressEvents = prev;
         }
@@ -369,9 +391,49 @@ public class MatsimCopilotPanel extends JPanel {
         prefs.put(PREF_PROVIDER, p.name());
         // make sure the (possibly already-correct) model value is persisted
         prefs.put(PREF_MODEL + p.name(), savedModel);
-        statusLabel.setText(p.needsKey && savedKey.isEmpty()
-                ? "No API key stored for " + p.label
-                : " ");
+        if (p == Provider.OLLAMA) {
+            statusLabel.setText(modelList == p.models
+                    ? "Ollama not reachable on localhost:11434 - showing default model names."
+                    : "Ollama: " + modelList.length + " local model(s) discovered.");
+        } else if (p == Provider.JLAMA) {
+            if (!JlamaService.isAvailable()) {
+                statusLabel.setText("Embedded (Java) provider unavailable: JLama JAR is missing on the classpath.");
+            } else {
+                statusLabel.setText("Embedded (Java): model is downloaded on first use to "
+                        + JlamaService.DEFAULT_MODEL_DIR + " (~0.5-2.5 GB). First answer will be slow.");
+            }
+        } else {
+            statusLabel.setText(p.needsKey && savedKey.isEmpty()
+                    ? "No API key stored for " + p.label
+                    : " ");
+        }
+    }
+
+    /**
+     * Query Ollama's {@code GET /api/tags} for the list of locally installed model names.
+     * Returns {@code null} on any failure (server not running, parse error, etc.).
+     */
+    private String[] fetchOllamaModels() {
+        try {
+            HttpRequest req = HttpRequest.newBuilder(URI.create("http://localhost:11434/api/tags"))
+                    .timeout(Duration.ofSeconds(2))
+                    .GET().build();
+            HttpResponse<String> resp = http.send(req, HttpResponse.BodyHandlers.ofString());
+            if (resp.statusCode() / 100 != 2) return null;
+            // Body looks like {"models":[{"name":"qwen2.5-coder:14b","model":"...", ...}, ...]}
+            com.fasterxml.jackson.databind.JsonNode root = new com.fasterxml.jackson.databind.ObjectMapper()
+                    .readTree(resp.body());
+            com.fasterxml.jackson.databind.JsonNode arr = root.path("models");
+            if (!arr.isArray() || arr.isEmpty()) return null;
+            List<String> names = new ArrayList<>();
+            for (com.fasterxml.jackson.databind.JsonNode m : arr) {
+                String name = m.path("name").asText("");
+                if (!name.isEmpty()) names.add(name);
+            }
+            return names.toArray(new String[0]);
+        } catch (Exception ex) {
+            return null;
+        }
     }
 
     private void saveCurrentKey() {
@@ -611,22 +673,31 @@ public class MatsimCopilotPanel extends JPanel {
 
     // -------------------------------------------------------------- agent mode
 
-    /** Runs one turn of the Gemini agent in a background thread. */
+    /** Runs one turn of the agent in a background thread. Dispatches to Gemini or OpenAI-compatible. */
     private void runAgentTurn(String userText) {
         Provider p = (Provider) providerBox.getSelectedItem();
         String model = (String) modelBox.getSelectedItem();
         if (p == null || model == null) return;
-        if (p != Provider.GEMINI) {
+        if (p == Provider.ANTHROPIC) {
             JOptionPane.showMessageDialog(this,
-                    "Agent mode currently supports the 'Google Gemini' provider only.\n"
-                            + "Please switch the provider, or use Chat mode.",
+                    "Agent mode for Anthropic is not implemented yet.\n"
+                            + "Supported in agent mode: Google Gemini, OpenAI, OpenRouter, Ollama (local).",
+                    "Agent mode unavailable", JOptionPane.WARNING_MESSAGE);
+            return;
+        }
+        if (p == Provider.JLAMA) {
+            JOptionPane.showMessageDialog(this,
+                    "Agent mode is not available for the embedded (Java) provider.\n\n"
+                            + "The small models that JLama can run locally are not reliable enough\n"
+                            + "for tool calling. Use Chat mode for embedded inference, or pick\n"
+                            + "Ollama / Gemini / OpenAI for Agent mode.",
                     "Agent mode unavailable", JOptionPane.WARNING_MESSAGE);
             return;
         }
         String apiKey = new String(apiKeyField.getPassword()).trim();
-        if (apiKey.isEmpty()) {
+        if (p.needsKey && apiKey.isEmpty()) {
             JOptionPane.showMessageDialog(this,
-                    "Please enter and save a Gemini API key first.",
+                    "Please enter and save an API key for " + p.label + " first.",
                     "API key missing", JOptionPane.WARNING_MESSAGE);
             return;
         }
@@ -650,24 +721,43 @@ public class MatsimCopilotPanel extends JPanel {
         MatsimAgentTools tools = new MatsimAgentTools(
                 configFileSupplier, stdOutSource, stdErrSource, runController, this::approveOnEdt);
 
-        GeminiAgent agent = new GeminiAgent(http, p.defaultEndpoint, model, apiKey, tools, AGENT_SYSTEM_PROMPT);
-
         GeminiAgent.ProgressListener listener = new GeminiAgent.ProgressListener() {
             @Override public void onToolCall(String name, JsonNode args) {
-                javax.swing.SwingUtilities.invokeLater(() -> appendToolCall(name, args));
+                javax.swing.SwingUtilities.invokeLater(() -> {
+                    appendToolCall(name, args);
+                    updateAgentStatus();
+                });
             }
             @Override public void onToolResult(String name, JsonNode result) {
-                javax.swing.SwingUtilities.invokeLater(() -> appendToolResult(name, result));
+                javax.swing.SwingUtilities.invokeLater(() -> {
+                    appendToolResult(name, result);
+                    updateAgentStatus();
+                });
             }
             @Override public void onModelText(String text) {
                 javax.swing.SwingUtilities.invokeLater(() -> appendAgentThought(text));
             }
         };
 
+        // Build the per-provider agent.
+        final Provider providerFinal = p;
+        final String modelFinal = model;
+        final String apiKeyFinal = apiKey;
+
         new SwingWorker<String, Void>() {
             @Override protected String doInBackground() throws Exception {
                 if (agentCancelRequested) return "[cancelled before start]";
-                return agent.runTurn(agentContents, userText, listener);
+                if (providerFinal == Provider.GEMINI) {
+                    GeminiAgent agent = new GeminiAgent(http, providerFinal.defaultEndpoint,
+                            modelFinal, apiKeyFinal, tools, AGENT_SYSTEM_PROMPT);
+                    return agent.runTurn(agentContents, userText, listener);
+                } else {
+                    boolean openrouter = providerFinal == Provider.OPENROUTER;
+                    String key = providerFinal == Provider.OLLAMA ? "" : apiKeyFinal;
+                    OpenAiToolAgent agent = new OpenAiToolAgent(http, providerFinal.defaultEndpoint,
+                            modelFinal, key, openrouter, tools, AGENT_SYSTEM_PROMPT);
+                    return agent.runTurn(agentMessages, userText, listener);
+                }
             }
             @Override protected void done() {
                 String reply;
@@ -685,6 +775,15 @@ public class MatsimCopilotPanel extends JPanel {
                 agentCancelRequested = false;
             }
         }.execute();
+    }
+
+    /** Updates the status label with an estimate of the current context size. */
+    private void updateAgentStatus() {
+        int chars = 0;
+        for (ObjectNode n : agentContents) chars += n.toString().length();
+        for (ObjectNode n : agentMessages) chars += n.toString().length();
+        statusLabel.setText(String.format("Agent: working… (~%,d ctx chars, ~%,d tokens)",
+                chars, chars / 4));
     }
 
     /**
@@ -795,21 +894,52 @@ public class MatsimCopilotPanel extends JPanel {
             + "     justify them in the 'reason' argument.\n"
             + "  5. Never invent file paths; use list_dir / read_file to discover them.\n"
             + "  6. Stop after the user's goal is met and reply with a short summary of what you "
-            + "     changed and what the result was.";
+            + "     changed and what the result was.\n"
+            + "  7. Token discipline: NEVER re-call read_config, read_file or list_dir for "
+            + "     something you already have in this conversation. Older tool results are "
+            + "     summarised on subsequent turns to save tokens; if you truly need a fresh "
+            + "     read, mention it.\n"
+            + "  8. Prefer narrow tools and small limits (e.g. tail_log max_lines=40 when you "
+            + "     only need the last error).";
 
     private String callProvider(Provider p, String model, String apiKey,
                                 List<Map.Entry<String, String>> hist) throws IOException, InterruptedException {
         switch (p) {
             case OPENAI:     return callOpenAiCompatible(p.defaultEndpoint, model, apiKey, hist, false);
             case OPENROUTER: return callOpenAiCompatible(p.defaultEndpoint, model, apiKey, hist, true);
-            case OLLAMA:     return callOllama(p.defaultEndpoint, model, hist);
+            case OLLAMA:     return callOpenAiCompatible(p.defaultEndpoint, model, "", hist, false);
             case ANTHROPIC:  return callAnthropic(p.defaultEndpoint, model, apiKey, hist);
             case GEMINI:     return callGemini(p.defaultEndpoint, model, apiKey, hist);
+            case JLAMA:      return callJlama(model, hist);
             default:         throw new IOException("Unknown provider: " + p);
         }
     }
 
-    /** OpenAI-compatible Chat Completions (used for OpenAI + OpenRouter). */
+    /**
+     * Embedded (pure-Java) chat via JLama. Loads the model on first use into
+     * {@link JlamaService#DEFAULT_MODEL_DIR}, downloading it from HuggingFace if
+     * necessary. Subsequent calls reuse the in-memory model.
+     */
+    private String callJlama(String model, List<Map.Entry<String, String>> hist)
+            throws IOException {
+        if (!JlamaService.isAvailable()) {
+            throw new IOException("Embedded (Java) provider is not available - the JLama "
+                    + "library is not on the classpath. Add com.github.tjake:jlama-core to "
+                    + "your dependencies (it is declared optional in the studio's pom.xml).");
+        }
+        // The history list contains every prior user/assistant turn; the latest user turn
+        // is appended last. We split it back into "history without last user turn" + "last user turn".
+        List<Map.Entry<String, String>> prior = new ArrayList<>(hist);
+        String latestUser;
+        if (!prior.isEmpty() && "user".equals(prior.get(prior.size() - 1).getKey())) {
+            latestUser = prior.remove(prior.size() - 1).getValue();
+        } else {
+            latestUser = "";
+        }
+        return JlamaService.chat(model, SYSTEM_PROMPT, prior, latestUser, 512, 0.3f);
+    }
+
+    /** OpenAI-compatible Chat Completions (used for OpenAI, OpenRouter, and Ollama). */
     private String callOpenAiCompatible(String endpoint, String model, String apiKey,
                                         List<Map.Entry<String, String>> hist, boolean openrouter) throws IOException, InterruptedException {
         StringBuilder body = new StringBuilder();
@@ -824,16 +954,32 @@ public class MatsimCopilotPanel extends JPanel {
 
         HttpRequest.Builder rb = HttpRequest.newBuilder(URI.create(endpoint))
                 .timeout(Duration.ofSeconds(120))
-                .header("Content-Type", "application/json")
-                .header("Authorization", "Bearer " + apiKey);
+                .header("Content-Type", "application/json");
+        if (apiKey != null && !apiKey.isBlank()) {
+            rb.header("Authorization", "Bearer " + apiKey);
+        }
         if (openrouter) {
             rb.header("HTTP-Referer", "https://matsim.org");
             rb.header("X-Title", "MATSim Copilot");
         }
         HttpRequest req = rb.POST(HttpRequest.BodyPublishers.ofString(body.toString())).build();
-        HttpResponse<String> resp = http.send(req, HttpResponse.BodyHandlers.ofString());
+        HttpResponse<String> resp;
+        try {
+            resp = http.send(req, HttpResponse.BodyHandlers.ofString());
+        } catch (java.net.ConnectException ce) {
+            throw new IOException("Could not connect to " + endpoint
+                    + ".\nFor Ollama: install it from https://ollama.com and start the server "
+                    + "(it normally autostarts after install). Then run e.g. `ollama pull "
+                    + model + "` once.", ce);
+        }
         if (resp.statusCode() / 100 != 2) {
-            throw new IOException("HTTP " + resp.statusCode() + ": " + resp.body());
+            String respBody = resp.body();
+            if (resp.statusCode() == 404 && respBody != null && respBody.contains("not found")
+                    && endpoint.contains("11434")) {
+                throw new IOException("Ollama: model '" + model + "' is not installed.\n"
+                        + "Run this once in a terminal:\n    ollama pull " + model);
+            }
+            throw new IOException("HTTP " + resp.statusCode() + ": " + respBody);
         }
         String content = JsonMini.findStringValue(resp.body(), "content");
         if (content == null) throw new IOException("No content in response: " + resp.body());
@@ -904,31 +1050,8 @@ public class MatsimCopilotPanel extends JPanel {
         return text;
     }
 
-    private String callOllama(String endpoint, String model,
-                              List<Map.Entry<String, String>> hist) throws IOException, InterruptedException {
-        StringBuilder body = new StringBuilder();
-        body.append("{\"model\":").append(jsonStr(model)).append(",\"stream\":false,");
-        body.append("\"messages\":[");
-        body.append("{\"role\":\"system\",\"content\":").append(jsonStr(SYSTEM_PROMPT)).append("}");
-        for (Map.Entry<String, String> m : hist) {
-            body.append(",{\"role\":").append(jsonStr(m.getKey()))
-                .append(",\"content\":").append(jsonStr(m.getValue())).append("}");
-        }
-        body.append("]}");
-        HttpRequest req = HttpRequest.newBuilder(URI.create(endpoint))
-                .timeout(Duration.ofSeconds(180))
-                .header("Content-Type", "application/json")
-                .POST(HttpRequest.BodyPublishers.ofString(body.toString())).build();
-        HttpResponse<String> resp = http.send(req, HttpResponse.BodyHandlers.ofString());
-        if (resp.statusCode() / 100 != 2) {
-            throw new IOException("HTTP " + resp.statusCode() + ": " + resp.body()
-                    + " (is Ollama running on " + endpoint + " ?)");
-        }
-        // Ollama: { "message": { "role":"assistant", "content":"..." }, ... }
-        String content = JsonMini.findStringValue(resp.body(), "content");
-        if (content == null) throw new IOException("No content in response: " + resp.body());
-        return content;
-    }
+    // (callOllama removed: Ollama is now reached via the OpenAI-compatible
+    //  /v1/chat/completions endpoint through callOpenAiCompatible.)
 
     // ------------------------------------------------------ JSON helpers
 

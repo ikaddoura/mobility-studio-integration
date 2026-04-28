@@ -46,7 +46,7 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
  * <p>Side-effecting tools ({@code write_config}, {@code start_matsim}, {@code stop_matsim})
  * always pass through the {@link #approver} callback so the user can confirm.</p>
  *
- * @author ikaddoura / GitHub Copilot
+ * @author ikaddoura / Claude
  */
 final class MatsimAgentTools {
 
@@ -54,9 +54,18 @@ final class MatsimAgentTools {
 
     /** Maximum bytes returned by {@code read_file}. */
     private static final int MAX_READ_BYTES = 200_000;
+    /**
+     * Hard refusal limit for {@code read_config}. We do NOT silently truncate the config
+     * because the agent will then try to "fix" the file by writing back its truncated
+     * view, corrupting it. If a config really exceeds this size, fail loudly so the
+     * agent can fall back to {@code read_file} on a slice.
+     */
+    private static final int MAX_CONFIG_CHARS = 500_000;
     /** Maximum number of log lines returned by {@code tail_log}. */
-    private static final int DEFAULT_TAIL_LINES = 200;
-    private static final int MAX_TAIL_LINES = 2_000;
+    private static final int DEFAULT_TAIL_LINES = 80;
+    private static final int MAX_TAIL_LINES = 500;
+    /** Tail size embedded in {@code wait_for_run} responses. */
+    private static final int RUN_RESULT_TAIL_LINES = 60;
 
     private static final ObjectMapper M = new ObjectMapper();
 
@@ -270,9 +279,16 @@ final class MatsimAgentTools {
         File f = configFileSupplier.get();
         if (f == null || !f.isFile()) return error("No config file is currently selected in the GUI.");
         String content = Files.readString(f.toPath());
+        if (content.length() > MAX_CONFIG_CHARS) {
+            return error("Config file is " + content.length() + " chars - too large to return safely "
+                    + "(limit " + MAX_CONFIG_CHARS + "). Use read_file with rel_path='" + f.getName()
+                    + "' to fetch slices, then write_config with the full content you constructed.");
+        }
         ObjectNode r = M.createObjectNode();
         r.put("path", f.getAbsolutePath());
+        r.put("size", content.length());
         r.put("content", content);
+        r.put("truncated", false);
         return r;
     }
 
@@ -281,6 +297,28 @@ final class MatsimAgentTools {
         if (f == null) return error("No config file is currently selected in the GUI.");
         String content = args.path("content").asText(null);
         if (content == null || content.isBlank()) return error("Tool argument 'content' is required and must be non-empty.");
+
+        // ---- basic sanity checks: refuse to write obviously broken XML ----
+        String trimmed = content.stripLeading();
+        if (!trimmed.startsWith("<?xml") && !trimmed.startsWith("<config")) {
+            return error("Refusing to write: content does not start with '<?xml' or '<config'. "
+                    + "If you only want to change a few values, return the FULL XML, not a fragment.");
+        }
+        if (!content.contains("</config>")) {
+            return error("Refusing to write: content does not contain a closing </config> tag. "
+                    + "This usually means the XML you produced is truncated. Re-read the file with "
+                    + "read_config and resend the COMPLETE content.");
+        }
+        // Reject content that looks dramatically smaller than the existing file (likely truncation).
+        if (f.isFile()) {
+            long existing = f.length();
+            if (existing > 5_000 && content.length() < existing / 2) {
+                return error("Refusing to write: new content (" + content.length() + " chars) is less "
+                        + "than half the size of the existing file (" + existing + " chars). This "
+                        + "almost always indicates a truncated payload. Re-read the file in full and "
+                        + "resend the COMPLETE content.");
+            }
+        }
 
         String summary = "Overwrite " + f.getAbsolutePath() + " (" + content.length() + " chars)";
         String reason = args.path("reason").asText("");
@@ -372,8 +410,8 @@ final class MatsimAgentTools {
             r.put("timed_out", false);
             r.put("exit_code", exit);
         }
-        r.put("stdout_tail", lastLines(stdOut == null ? "" : stdOut.getText(), DEFAULT_TAIL_LINES));
-        r.put("stderr_tail", lastLines(stdErr == null ? "" : stdErr.getText(), DEFAULT_TAIL_LINES));
+        r.put("stdout_tail", lastLines(stdOut == null ? "" : stdOut.getText(), RUN_RESULT_TAIL_LINES));
+        r.put("stderr_tail", lastLines(stdErr == null ? "" : stdErr.getText(), RUN_RESULT_TAIL_LINES));
         return r;
     }
 

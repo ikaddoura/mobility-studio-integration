@@ -36,7 +36,7 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
  * of tool calls / tool results. It iterates until either the model returns a final
  * text answer, the maximum number of iterations is reached, or it is cancelled.</p>
  *
- * @author ikaddoura / GitHub Copilot
+ * @author ikaddoura / Claude
  */
 final class GeminiAgent {
 
@@ -86,6 +86,10 @@ final class GeminiAgent {
         contents.add(userPart(userText));
 
         for (int iter = 0; iter < MAX_ITERATIONS; iter++) {
+            // Compact older tool-results before each call: only the most recent results
+            // are needed verbatim, the rest can be reduced to a tiny summary. This is
+            // by far the biggest token-saver in the agent loop.
+            compactOldToolResults(contents);
             ObjectNode response = callGemini(contents);
 
             // Pull the first candidate's content (which is itself a "content" part with a "parts" array).
@@ -229,4 +233,67 @@ final class GeminiAgent {
     /** Suppress unused-import warning when a future provider is added. */
     @SuppressWarnings("unused")
     private static Consumer<String> noOp() { return s -> { }; }
+
+    // ---------------------------------------------------------- history compaction
+
+    /** Maximum chars to keep per tool-response part once it has been "consumed". */
+    private static final int OLD_TOOL_RESULT_CHARS = 200;
+
+    /**
+     * Walk the conversation and replace every {@code functionResponse.content} that is
+     * older than the most recent tool-result turn with a tiny summary.
+     */
+    static void compactOldToolResults(List<ObjectNode> contents) {
+        int lastToolResultsIdx = -1;
+        for (int i = contents.size() - 1; i >= 0; i--) {
+            if (isToolResultsTurn(contents.get(i))) { lastToolResultsIdx = i; break; }
+        }
+        for (int i = 0; i < contents.size(); i++) {
+            if (i == lastToolResultsIdx) continue;
+            ObjectNode turn = contents.get(i);
+            if (!isToolResultsTurn(turn)) continue;
+            for (JsonNode part : turn.path("parts")) {
+                if (!part.has("functionResponse")) continue;
+                JsonNode fr = part.get("functionResponse");
+                if (!(fr instanceof ObjectNode)) continue;
+                JsonNode resp = fr.path("response");
+                if (!(resp instanceof ObjectNode respObj)) continue;
+                JsonNode content = respObj.path("content");
+                if (content.has("compacted")) continue; // already compacted
+                ObjectNode compact = M.createObjectNode();
+                compact.put("compacted", true);
+                compact.put("summary", summariseForHistory(content));
+                respObj.set("content", compact);
+            }
+        }
+    }
+
+    private static boolean isToolResultsTurn(ObjectNode turn) {
+        if (!"user".equals(turn.path("role").asText())) return false;
+        for (JsonNode part : turn.path("parts")) {
+            if (part.has("functionResponse")) return true;
+        }
+        return false;
+    }
+
+    private static String summariseForHistory(JsonNode content) {
+        if (content == null || content.isNull()) return "ok";
+        if (content.has("error")) return "error: " + truncate(content.path("error").asText(), 120);
+        if (content.has("exit_code")) return "exit_code=" + content.get("exit_code").asInt();
+        if (content.has("bytes_written"))
+            return content.get("bytes_written").asInt() + " bytes written to "
+                    + truncate(content.path("path").asText(""), 80);
+        if (content.has("entries"))
+            return content.get("entries").size() + " entries in "
+                    + truncate(content.path("path").asText(""), 80);
+        if (content.has("size") && content.has("path"))
+            return "file " + truncate(content.path("path").asText(""), 80)
+                    + " (" + content.get("size").asInt() + " bytes)";
+        return truncate(content.toString(), OLD_TOOL_RESULT_CHARS);
+    }
+
+    private static String truncate(String s, int max) {
+        if (s == null) return "";
+        return s.length() <= max ? s : s.substring(0, max) + "…";
+    }
 }
