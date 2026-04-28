@@ -22,8 +22,10 @@ import java.awt.GridBagLayout;
 import java.awt.Insets;
 import java.awt.event.ActionEvent;
 import java.awt.event.KeyEvent;
+import java.io.File;
 import java.io.IOException;
 import java.net.URI;
+import java.nio.file.Files;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
@@ -32,6 +34,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Supplier;
 import java.util.prefs.Preferences;
 
 import javax.swing.AbstractAction;
@@ -88,8 +91,12 @@ public class MatsimCopilotPanel extends JPanel {
     private static final String PREF_MODEL = "copilot.model.";
     private static final String PREF_KEY = "copilot.apikey.";
     private static final String PREF_ENDPOINT = "copilot.endpoint.";
+    private static final String PREF_SETTINGS_VISIBLE = "copilot.settings.visible";
+    private static final String PREF_INCLUDE_LOG = "copilot.include.log";
+    private static final String PREF_INCLUDE_CONFIG = "copilot.include.config";
 
     private static final int MAX_LOG_CHARS = 12_000;
+    private static final int MAX_CONFIG_CHARS = 60_000;
 
     /** Provider definitions. */
     private enum Provider {
@@ -135,6 +142,9 @@ public class MatsimCopilotPanel extends JPanel {
     private final JPasswordField apiKeyField = new JPasswordField(28);
     private final JButton saveKeyBtn = new JButton("Save");
     private final JCheckBox includeLogBox = new JCheckBox("Send recent log/error output as context", true);
+    private final JCheckBox includeConfigBox = new JCheckBox("Send selected configuration file as context", false);
+    private final JButton settingsToggle = new JButton("\u2699 Settings \u25BC");
+    private JPanel settingsPanel;
     private final JTextPane chatPane = new JTextPane();
     private final JTextArea inputArea = new JTextArea(4, 60);
     private final JButton sendBtn = new JButton("Send  (Ctrl+Enter)");
@@ -144,6 +154,7 @@ public class MatsimCopilotPanel extends JPanel {
 
     private final JTextArea stdOutSource;
     private final JTextArea stdErrSource;
+    private Supplier<File> configFileSupplier = () -> null;
 
     /** Conversation history (role, content). */
     private final List<Map.Entry<String, String>> history = new ArrayList<>();
@@ -155,10 +166,18 @@ public class MatsimCopilotPanel extends JPanel {
         restoreFromPrefs();
         appendSystem(
                 "Hi, I am the MATSim Copilot. \uD83E\uDD16\n"
-                        + "Pick a provider, enter your API key (saved locally) and ask me anything about your\n"
-                        + "MATSim run. By default I receive the latest log lines so I can help\n"
-                        + "interpret warnings and errors.\n\n"
+                        + "Open \u2699 Settings to pick a provider and enter your API key (saved locally).\n"
+                        + "By default I receive the latest log lines so I can help interpret warnings\n"
+                        + "and errors. You can also send the selected config file as additional context.\n\n"
                         + "Tip: use the button \"Explain last error\" right after a failed run.\n");
+    }
+
+    /**
+     * Provide a supplier returning the currently selected MATSim configuration file
+     * (or {@code null} if none). Called by {@link GuiWithConfigEditor}.
+     */
+    public void setConfigFileSupplier(Supplier<File> supplier) {
+        this.configFileSupplier = supplier != null ? supplier : (() -> null);
     }
 
     // ------------------------------------------------------------------ UI
@@ -167,26 +186,41 @@ public class MatsimCopilotPanel extends JPanel {
         setLayout(new BorderLayout(6, 6));
         setBorder(BorderFactory.createEmptyBorder(6, 6, 6, 6));
 
-        // ----- top: provider / model / key -----
-        JPanel top = new JPanel(new GridBagLayout());
+        // ----- top: header with collapsible settings -----
+        JPanel header = new JPanel(new BorderLayout());
+
+        JPanel topBar = new JPanel(new FlowLayout(FlowLayout.LEFT, 6, 2));
+        settingsToggle.setFocusable(false);
+        settingsToggle.setBorderPainted(false);
+        settingsToggle.setContentAreaFilled(false);
+        topBar.add(settingsToggle);
+        topBar.add(includeLogBox);
+        topBar.add(includeConfigBox);
+        header.add(topBar, BorderLayout.NORTH);
+
+        settingsPanel = new JPanel(new GridBagLayout());
+        settingsPanel.setBorder(BorderFactory.createTitledBorder("AI Provider"));
         GridBagConstraints c = new GridBagConstraints();
         c.insets = new Insets(2, 4, 2, 4);
         c.anchor = GridBagConstraints.WEST;
         c.fill = GridBagConstraints.HORIZONTAL;
 
-        c.gridx = 0; c.gridy = 0; top.add(new JLabel("Provider:"), c);
-        c.gridx = 1; top.add(providerBox, c);
-        c.gridx = 2; top.add(new JLabel("Model:"), c);
-        c.gridx = 3; c.weightx = 1; top.add(modelBox, c);
+        c.gridx = 0; c.gridy = 0; settingsPanel.add(new JLabel("Provider:"), c);
+        c.gridx = 1; settingsPanel.add(providerBox, c);
+        c.gridx = 2; settingsPanel.add(new JLabel("Model:"), c);
+        c.gridx = 3; c.weightx = 1; settingsPanel.add(modelBox, c);
         c.weightx = 0;
 
-        c.gridx = 0; c.gridy = 1; top.add(new JLabel("API key:"), c);
-        c.gridx = 1; c.gridwidth = 2; top.add(apiKeyField, c); c.gridwidth = 1;
-        c.gridx = 3; top.add(saveKeyBtn, c);
+        c.gridx = 0; c.gridy = 1; settingsPanel.add(new JLabel("API key:"), c);
+        c.gridx = 1; c.gridwidth = 2; settingsPanel.add(apiKeyField, c); c.gridwidth = 1;
+        c.gridx = 3; settingsPanel.add(saveKeyBtn, c);
 
-        c.gridx = 0; c.gridy = 2; c.gridwidth = 4; top.add(includeLogBox, c); c.gridwidth = 1;
+        header.add(settingsPanel, BorderLayout.CENTER);
+        // start collapsed unless user previously had it open
+        settingsPanel.setVisible(prefs.getBoolean(PREF_SETTINGS_VISIBLE, false));
+        updateSettingsToggleLabel();
 
-        add(top, BorderLayout.NORTH);
+        add(header, BorderLayout.NORTH);
 
         // ----- center: chat + input split -----
         chatPane.setEditable(false);
@@ -215,6 +249,14 @@ public class MatsimCopilotPanel extends JPanel {
         add(split, BorderLayout.CENTER);
 
         // ----- behaviour -----
+        settingsToggle.addActionListener(e -> {
+            boolean newVisible = !settingsPanel.isVisible();
+            settingsPanel.setVisible(newVisible);
+            prefs.putBoolean(PREF_SETTINGS_VISIBLE, newVisible);
+            updateSettingsToggleLabel();
+            revalidate();
+            repaint();
+        });
         providerBox.addActionListener(e -> onProviderChanged());
         modelBox.addActionListener(e -> {
             Provider p = (Provider) providerBox.getSelectedItem();
@@ -222,6 +264,8 @@ public class MatsimCopilotPanel extends JPanel {
                 prefs.put(PREF_MODEL + p.name(), modelBox.getSelectedItem().toString());
             }
         });
+        includeLogBox.addActionListener(e -> prefs.putBoolean(PREF_INCLUDE_LOG, includeLogBox.isSelected()));
+        includeConfigBox.addActionListener(e -> prefs.putBoolean(PREF_INCLUDE_CONFIG, includeConfigBox.isSelected()));
         saveKeyBtn.addActionListener(e -> saveCurrentKey());
         sendBtn.addActionListener(e -> onSend());
         explainErrorBtn.addActionListener(e -> onExplainError());
@@ -238,6 +282,10 @@ public class MatsimCopilotPanel extends JPanel {
             private static final long serialVersionUID = 1L;
             @Override public void actionPerformed(ActionEvent e) { onSend(); }
         });
+    }
+
+    private void updateSettingsToggleLabel() {
+        settingsToggle.setText(settingsPanel.isVisible() ? "\u2699 Settings \u25B2" : "\u2699 Settings \u25BC");
     }
 
     private void onProviderChanged() {
@@ -276,6 +324,8 @@ public class MatsimCopilotPanel extends JPanel {
             providerBox.setSelectedItem(Provider.OPENAI);
         }
         onProviderChanged();
+        includeLogBox.setSelected(prefs.getBoolean(PREF_INCLUDE_LOG, true));
+        includeConfigBox.setSelected(prefs.getBoolean(PREF_INCLUDE_CONFIG, false));
     }
 
     // ------------------------------------------------------------------ chat
@@ -314,13 +364,20 @@ public class MatsimCopilotPanel extends JPanel {
             return;
         }
 
-        // Build the user message - optionally enriched with log context.
+        // Build the user message - optionally enriched with log/config context.
         StringBuilder full = new StringBuilder(userText);
         if (attachLog && includeLogBox.isSelected()) {
             String ctx = buildLogContext();
             if (!ctx.isEmpty()) {
                 full.append("\n\n---\nRecent MATSim log (truncated):\n```\n")
                     .append(ctx).append("\n```");
+            }
+        }
+        if (attachLog && includeConfigBox.isSelected()) {
+            String cfg = buildConfigContext();
+            if (!cfg.isEmpty()) {
+                full.append("\n\n---\nSelected MATSim configuration file:\n```xml\n")
+                    .append(cfg).append("\n```");
             }
         }
         history.add(Map.entry("user", full.toString()));
@@ -368,6 +425,29 @@ public class MatsimCopilotPanel extends JPanel {
     private static String tail(String s, int maxChars) {
         if (s.length() <= maxChars) return s;
         return "…(truncated)…\n" + s.substring(s.length() - maxChars);
+    }
+
+    /**
+     * Read the currently selected config file (provided via {@link #setConfigFileSupplier(Supplier)})
+     * and return its contents, truncated to {@link #MAX_CONFIG_CHARS}.
+     */
+    private String buildConfigContext() {
+        File f = configFileSupplier.get();
+        if (f == null || !f.isFile()) return "";
+        try {
+            String content = Files.readString(f.toPath());
+            StringBuilder sb = new StringBuilder();
+            sb.append("[file: ").append(f.getAbsolutePath()).append("]\n");
+            if (content.length() > MAX_CONFIG_CHARS) {
+                sb.append(content, 0, MAX_CONFIG_CHARS).append("\n…(truncated)…");
+            } else {
+                sb.append(content);
+            }
+            return sb.toString();
+        } catch (IOException e) {
+            log.warn("Could not read config file for Copilot context: " + f.getAbsolutePath(), e);
+            return "[could not read " + f.getAbsolutePath() + ": " + e.getMessage() + "]";
+        }
     }
 
     // ------------------------------------------------------------- chat view
