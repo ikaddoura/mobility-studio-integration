@@ -156,6 +156,9 @@ public class MatsimCopilotPanel extends JPanel {
     private final JTextArea stdErrSource;
     private Supplier<File> configFileSupplier = () -> null;
 
+    /** Suppress side effects (saving to prefs) while we programmatically populate the combo boxes. */
+    private boolean suppressEvents = false;
+
     /** Conversation history (role, content). */
     private final List<Map.Entry<String, String>> history = new ArrayList<>();
 
@@ -257,8 +260,9 @@ public class MatsimCopilotPanel extends JPanel {
             revalidate();
             repaint();
         });
-        providerBox.addActionListener(e -> onProviderChanged());
+        providerBox.addActionListener(e -> { if (!suppressEvents) onProviderChanged(); });
         modelBox.addActionListener(e -> {
+            if (suppressEvents) return;
             Provider p = (Provider) providerBox.getSelectedItem();
             if (p != null && modelBox.getSelectedItem() != null) {
                 prefs.put(PREF_MODEL + p.name(), modelBox.getSelectedItem().toString());
@@ -291,11 +295,21 @@ public class MatsimCopilotPanel extends JPanel {
     private void onProviderChanged() {
         Provider p = (Provider) providerBox.getSelectedItem();
         if (p == null) return;
-        modelBox.removeAllItems();
-        for (String m : p.models) modelBox.addItem(m);
-        // restore last used model
+
+        // Read the saved model BEFORE touching the combo box - because addItem()
+        // on the first element fires a selection event that would otherwise
+        // overwrite our preference with the default.
         String savedModel = prefs.get(PREF_MODEL + p.name(), p.models[0]);
-        modelBox.setSelectedItem(savedModel);
+
+        boolean prev = suppressEvents;
+        suppressEvents = true;
+        try {
+            modelBox.removeAllItems();
+            for (String m : p.models) modelBox.addItem(m);
+            modelBox.setSelectedItem(savedModel);
+        } finally {
+            suppressEvents = prev;
+        }
 
         String savedKey = prefs.get(PREF_KEY + p.name(), "");
         apiKeyField.setText(savedKey);
@@ -303,6 +317,8 @@ public class MatsimCopilotPanel extends JPanel {
         saveKeyBtn.setEnabled(p.needsKey);
 
         prefs.put(PREF_PROVIDER, p.name());
+        // make sure the (possibly already-correct) model value is persisted
+        prefs.put(PREF_MODEL + p.name(), savedModel);
         statusLabel.setText(p.needsKey && savedKey.isEmpty()
                 ? "No API key stored for " + p.label
                 : " ");

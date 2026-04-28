@@ -122,6 +122,13 @@
     		<version>3.4.1</version> 
 		</dependency>
 
+		<dependency>
+			<!-- FlatSVGIcon for rendering SVG logos in Swing. -->
+			<groupId>com.formdev</groupId>
+			<artifactId>flatlaf-extras</artifactId>
+			<version>3.4.1</version>
+		</dependency>
+
 		<!--Dependencies from where stated above to here are added as a service; they can be removed if you don't need them-->
 
 	</dependencies>

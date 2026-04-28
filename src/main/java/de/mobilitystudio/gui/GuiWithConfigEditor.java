@@ -20,11 +20,13 @@
 package de.mobilitystudio.gui;
 
 import java.awt.Desktop;
+import java.awt.Image;
 import java.io.BufferedReader;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.InputStreamReader;
+import java.net.URL;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Optional;
@@ -35,8 +37,10 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.zip.GZIPInputStream;
 
+import javax.swing.Box;
 import javax.swing.GroupLayout;
 import javax.swing.GroupLayout.Alignment;
+import javax.swing.ImageIcon;
 import javax.swing.JButton;
 import javax.swing.JFileChooser;
 import javax.swing.JFrame;
@@ -67,6 +71,9 @@ import org.matsim.core.config.groups.QSimConfigGroup.StarttimeInterpretation;
 import org.matsim.core.config.groups.ScoringConfigGroup;
 import org.matsim.core.gbl.Gbl;
 import org.matsim.core.utils.io.IOUtils;
+
+import com.formdev.flatlaf.extras.FlatSVGIcon;
+import com.formdev.flatlaf.extras.FlatSVGUtils;
 
 import de.mobilitystudio.config.EditorDialogConfig;
 
@@ -539,6 +546,15 @@ public class GuiWithConfigEditor extends JFrame {
 		
 		JTabbedPane tabbedPane = new JTabbedPane(JTabbedPane.TOP);
 
+		JLabel logoLabel = new JLabel();
+		try {
+			FlatSVGIcon logoIcon = new FlatSVGIcon("logos/matsim_logo.svg").derive(0.1f);
+			logoLabel.setIcon(logoIcon);
+			logoLabel.setToolTipText("MATSim - Multi-Agent Transport Simulation");
+		} catch (Exception ex) {
+			log.warn("Could not load MATSim logo: " + ex.getMessage());
+		}
+
 		GroupLayout groupLayout = new GroupLayout(getContentPane());
 
 		final GroupLayout.SequentialGroup prebuttonsSequentialGroup = groupLayout.createSequentialGroup();
@@ -559,6 +575,7 @@ public class GuiWithConfigEditor extends JFrame {
 				.addGroup(Alignment.LEADING, groupLayout.createSequentialGroup()
 						.addContainerGap()
 						.addGroup(groupLayout.createParallelGroup(Alignment.LEADING)
+								.addComponent(logoLabel)
 								.addComponent(tabbedPane, GroupLayout.DEFAULT_SIZE, 729, Short.MAX_VALUE)
 								.addComponent(lblFilepaths)
 								.addGroup(prebuttonsSequentialGroup)
@@ -607,6 +624,8 @@ public class GuiWithConfigEditor extends JFrame {
 		groupLayout.setVerticalGroup(groupLayout.createParallelGroup(Alignment.LEADING)
 				.addGroup(groupLayout.createSequentialGroup()
 						.addContainerGap()
+						.addComponent(logoLabel)
+						.addPreferredGap(ComponentPlacement.UNRELATED)
 						.addGroup(groupLayout.createParallelGroup(Alignment.BASELINE)
 								.addComponent(lblYouAreUsingMATSimVersion)
 								.addComponent(txtMatsimversion, GroupLayout.PREFERRED_SIZE, GroupLayout.DEFAULT_SIZE,
@@ -683,6 +702,13 @@ public class GuiWithConfigEditor extends JFrame {
 
 		menuBar = new JMenuBar();
 		setJMenuBar(menuBar);
+
+		// Set the window/taskbar icon (multi-resolution)
+//		try {
+//			setIconImages(FlatSVGUtils.createWindowIconImages("/logos/matsim_logo.svg"));
+//		} catch (Exception ex) {
+//			log.warn("Could not set window icon from MATSim logo: " + ex.getMessage());
+//		}
 	}
 	
 	/**
