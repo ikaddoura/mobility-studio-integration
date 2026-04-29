@@ -93,6 +93,9 @@ final class OpenAiToolAgent {
         messages.add(msg("user", userText));
 
         for (int iter = 0; iter < MAX_ITERATIONS; iter++) {
+            if (Thread.currentThread().isInterrupted()) {
+                throw new InterruptedException("Agent cancelled by user.");
+            }
             compactOldToolResults(messages);
             ObjectNode response = call(messages);
 

@@ -35,9 +35,12 @@ import org.apache.logging.log4j.Logger;
  * the optional {@code jlama-core} dependency is absent and produces a friendly error
  * at runtime if the user picks the JLama provider without the JAR on the classpath.</p>
  *
- * <p>For SIMD-accelerated inference, launch the JVM with
- * {@code --add-modules jdk.incubator.vector}. Without it JLama still works but uses
- * scalar arithmetic and is noticeably slower.</p>
+ * <p><b>Required JVM flag:</b> recent JLama versions hard-depend on the incubator
+ * Vector API. The JVM must therefore be launched with
+ * {@code --add-modules jdk.incubator.vector --enable-native-access=ALL-UNNAMED}.
+ * Without these flags model loading fails with
+ * {@code NoClassDefFoundError: jdk/incubator/vector/FloatVector}; this class
+ * detects that case and produces a friendly error message.</p>
  *
  * @author ikaddoura / Claude
  */
@@ -58,7 +61,9 @@ final class JlamaService {
             "tjake/Qwen2.5-0.5B-Instruct-JQ4",          // ~0.5 GB, very fast, weaker quality
             "tjake/Llama-3.2-3B-Instruct-JQ4",          // ~2.5 GB, much better at reasoning
             "tjake/Qwen2.5-Coder-1.5B-Instruct-JQ4",    // ~1.2 GB, code-focussed
-            "tjake/Phi-3-mini-4k-instruct-JQ4",         // ~2.5 GB, MS Phi-3, broad knowledge
+            // Note: tjake/Phi-3-mini-4k-instruct-JQ4 was removed because the
+            // upstream HuggingFace repo currently returns HTTP 401 (gated/private),
+            // which manifests as an unhelpful InvocationTargetException on first use.
     };
 
     /** Cached loaded models keyed by full model name. */
@@ -105,9 +110,15 @@ final class JlamaService {
                     log.info("Loading JLama model '" + name + "' (this may take a while on first run)…");
                     return loadModel(name);
                 } catch (Exception e) {
-                    throw new RuntimeException(e);
+                    throw new RuntimeException(translateLoadError(name, e));
                 }
             });
+
+            // Honour SwingWorker cancellation: if the user clicks "Stop" the worker
+            // thread is interrupted; check that before kicking off a long generation.
+            if (Thread.currentThread().isInterrupted()) {
+                throw new IOException("Cancelled by user.");
+            }
 
             Object promptCtx = buildPrompt(fullModelName, model, systemPrompt, history, userText);
             return generate(model, promptCtx, temperature, maxTokens);
@@ -119,6 +130,49 @@ final class JlamaService {
         } catch (Exception ex) {
             throw new IOException(ex.getMessage() == null ? ex.toString() : ex.getMessage(), ex);
         }
+    }
+
+    /**
+     * Map the most common (and most cryptic) JLama load failures to actionable
+     * messages. Walks the cause chain looking for known signatures.
+     */
+    private static IOException translateLoadError(String modelName, Throwable t) {
+        Throwable cur = t;
+        while (cur != null) {
+            String msg = String.valueOf(cur.getMessage());
+            // Missing JVM module (Vector API).
+            if (cur instanceof NoClassDefFoundError
+                    || cur instanceof ClassNotFoundException) {
+                if (msg.contains("jdk/incubator/vector") || msg.contains("jdk.incubator.vector")) {
+                    return new IOException(
+                            "JLama requires the JVM incubator Vector module. Restart the studio with:\n"
+                                    + "    --add-modules jdk.incubator.vector --enable-native-access=ALL-UNNAMED\n"
+                                    + "(Add these to your launcher / IDE 'VM options'.)", t);
+                }
+            }
+            // HTTP 401 from HuggingFace (gated or private model, or expired HF token).
+            if (msg.contains("HTTP response code: 401")
+                    || (msg.contains("401") && msg.contains("huggingface.co"))) {
+                return new IOException(
+                        "HuggingFace returned 401 (Unauthorized) for model '" + modelName + "'.\n"
+                                + "The model is either gated or no longer publicly available.\n"
+                                + "Pick a different model from the list (e.g. tjake/Llama-3.2-1B-Instruct-JQ4),\n"
+                                + "or set the HF_TOKEN environment variable to a token that has access.",
+                        t);
+            }
+            if (msg.contains("HTTP response code: 403")) {
+                return new IOException(
+                        "HuggingFace returned 403 (Forbidden) for model '" + modelName + "'.\n"
+                                + "Accept the model licence on its HuggingFace page and/or set HF_TOKEN.",
+                        t);
+            }
+            if (msg.contains("HTTP response code: 404")) {
+                return new IOException(
+                        "HuggingFace returned 404 for model '" + modelName + "'. Check the spelling.", t);
+            }
+            cur = cur.getCause();
+        }
+        return new IOException("Could not load JLama model '" + modelName + "': " + t, t);
     }
 
     // ------------------------------------------------------------------ reflection plumbing
@@ -186,13 +240,33 @@ final class JlamaService {
             throws Exception {
         Class<?> abstractModel = Class.forName("com.github.tjake.jlama.model.AbstractModel");
         Class<?> promptContext = Class.forName("com.github.tjake.jlama.safetensors.prompt.PromptContext");
-        // public Response generate(UUID, PromptContext, float, int, BiConsumer<String,Float>)
-        java.util.function.BiConsumer<String, Float> sink = (s, f) -> { /* discard streamed tokens */ };
-        Object response = abstractModel
-                .getMethod("generate", UUID.class, promptContext, float.class, int.class,
-                        java.util.function.BiConsumer.class)
-                .invoke(model, UUID.randomUUID(), promptCtx, temperature, maxTokens, sink);
-        Object text = response.getClass().getField("responseText").get(response);
-        return text == null ? "" : text.toString().trim();
+        // Streaming sink that aborts generation if the worker thread was interrupted
+        // (i.e. the user pressed "Stop"). Throwing inside the BiConsumer makes JLama
+        // stop the token loop and propagate the exception out of generate().
+        java.util.function.BiConsumer<String, Float> sink = (s, f) -> {
+            if (Thread.currentThread().isInterrupted()) {
+                throw new CancellationException("Cancelled by user.");
+            }
+        };
+        try {
+            Object response = abstractModel
+                    .getMethod("generate", UUID.class, promptContext, float.class, int.class,
+                            java.util.function.BiConsumer.class)
+                    .invoke(model, UUID.randomUUID(), promptCtx, temperature, maxTokens, sink);
+            Object text = response.getClass().getField("responseText").get(response);
+            return text == null ? "" : text.toString().trim();
+        } catch (java.lang.reflect.InvocationTargetException ite) {
+            Throwable cause = ite.getCause();
+            if (cause instanceof CancellationException) {
+                throw new IOException("Cancelled by user.");
+            }
+            throw ite;
+        }
+    }
+
+    /** Marker exception for cooperative cancellation inside the JLama streaming sink. */
+    private static final class CancellationException extends RuntimeException {
+        private static final long serialVersionUID = 1L;
+        CancellationException(String msg) { super(msg); }
     }
 }

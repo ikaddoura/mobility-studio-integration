@@ -86,6 +86,9 @@ final class GeminiAgent {
         contents.add(userPart(userText));
 
         for (int iter = 0; iter < MAX_ITERATIONS; iter++) {
+            if (Thread.currentThread().isInterrupted()) {
+                throw new InterruptedException("Agent cancelled by user.");
+            }
             // Compact older tool-results before each call: only the most recent results
             // are needed verbatim, the rest can be reduced to a tiny summary. This is
             // by far the biggest token-saver in the agent loop.

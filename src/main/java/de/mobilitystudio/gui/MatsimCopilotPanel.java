@@ -166,7 +166,7 @@ public class MatsimCopilotPanel extends JPanel {
     private final JButton sendBtn = new JButton("Send  (Ctrl+Enter)");
     private final JButton explainErrorBtn = new JButton("Explain last error");
     private final JButton clearBtn = new JButton("New chat");
-    private final JButton stopAgentBtn = new JButton("Stop agent");
+    private final JButton stopAgentBtn = new JButton("Stop");
     private final JLabel statusLabel = new JLabel(" ");
 
     private final JTextArea stdOutSource;
@@ -185,6 +185,8 @@ public class MatsimCopilotPanel extends JPanel {
     private final List<ObjectNode> agentMessages = new ArrayList<>();
     /** When non-null, the user has asked to cancel the running agent loop. */
     private volatile boolean agentCancelRequested = false;
+    /** The currently running background worker (chat or agent), or {@code null} when idle. */
+    private volatile SwingWorker<?, ?> currentWorker = null;
 
     public MatsimCopilotPanel(JTextArea stdOutSource, JTextArea stdErrSource) {
         this.stdOutSource = stdOutSource;
@@ -290,7 +292,9 @@ public class MatsimCopilotPanel extends JPanel {
         bottom.add(actions, BorderLayout.SOUTH);
 
         stopAgentBtn.setVisible(false);
-        stopAgentBtn.setToolTipText("Cancel the agent's loop after the current tool call.");
+        stopAgentBtn.setToolTipText("Cancel the current request: stops the agent loop or "
+                + "interrupts the chat HTTP/local-model call. Use this if a local Ollama / "
+                + "JLama model is making the machine unresponsive.");
 
         JSplitPane split = new JSplitPane(JSplitPane.VERTICAL_SPLIT, chatScroll, bottom);
         split.setResizeWeight(0.75);
@@ -335,7 +339,13 @@ public class MatsimCopilotPanel extends JPanel {
         });
         stopAgentBtn.addActionListener(e -> {
             agentCancelRequested = true;
-            statusLabel.setText("Cancelling agent…");
+            statusLabel.setText("Cancelling…");
+            SwingWorker<?, ?> w = currentWorker;
+            if (w != null) {
+                // Interrupts the worker thread → HttpClient.send throws InterruptedException
+                // and the JLama streaming sink aborts generation.
+                w.cancel(true);
+            }
         });
 
         // Ctrl+Enter to send
@@ -546,27 +556,44 @@ public class MatsimCopilotPanel extends JPanel {
 
         sendBtn.setEnabled(false);
         explainErrorBtn.setEnabled(false);
+        stopAgentBtn.setVisible(true);
+        stopAgentBtn.setEnabled(true);
         statusLabel.setText("Thinking…");
 
-        new SwingWorker<String, Void>() {
+        SwingWorker<String, Void> worker = new SwingWorker<String, Void>() {
             @Override protected String doInBackground() throws Exception {
                 return callProvider(p, model, apiKey, history);
             }
             @Override protected void done() {
                 String reply;
                 try {
-                    reply = get();
+                    if (isCancelled()) {
+                        reply = "[Cancelled by user]";
+                    } else {
+                        reply = get();
+                    }
+                } catch (java.util.concurrent.CancellationException ce) {
+                    reply = "[Cancelled by user]";
                 } catch (Exception ex) {
                     log.warn("Copilot error", ex);
-                    reply = "[Error] " + ex.getMessage();
+                    Throwable root = ex.getCause() != null ? ex.getCause() : ex;
+                    if (root instanceof InterruptedException) {
+                        reply = "[Cancelled by user]";
+                    } else {
+                        reply = "[Error] " + root.getMessage();
+                    }
                 }
                 history.add(Map.entry("assistant", reply));
                 replacePlaceholderWithAssistant(reply);
                 statusLabel.setText(" ");
                 sendBtn.setEnabled(true);
                 explainErrorBtn.setEnabled(true);
+                stopAgentBtn.setVisible(false);
+                currentWorker = null;
             }
-        }.execute();
+        };
+        currentWorker = worker;
+        worker.execute();
     }
 
     private String buildLogContext() {
@@ -744,7 +771,7 @@ public class MatsimCopilotPanel extends JPanel {
         final String modelFinal = model;
         final String apiKeyFinal = apiKey;
 
-        new SwingWorker<String, Void>() {
+        SwingWorker<String, Void> worker = new SwingWorker<String, Void>() {
             @Override protected String doInBackground() throws Exception {
                 if (agentCancelRequested) return "[cancelled before start]";
                 if (providerFinal == Provider.GEMINI) {
@@ -762,10 +789,21 @@ public class MatsimCopilotPanel extends JPanel {
             @Override protected void done() {
                 String reply;
                 try {
-                    reply = get();
+                    if (isCancelled()) {
+                        reply = "[Agent cancelled by user]";
+                    } else {
+                        reply = get();
+                    }
+                } catch (java.util.concurrent.CancellationException ce) {
+                    reply = "[Agent cancelled by user]";
                 } catch (Exception ex) {
                     log.warn("Agent error", ex);
-                    reply = "[Agent error] " + ex.getMessage();
+                    Throwable root = ex.getCause() != null ? ex.getCause() : ex;
+                    if (root instanceof InterruptedException) {
+                        reply = "[Agent cancelled by user]";
+                    } else {
+                        reply = "[Agent error] " + root.getMessage();
+                    }
                 }
                 appendAgentFinal(reply);
                 statusLabel.setText(" ");
@@ -773,8 +811,11 @@ public class MatsimCopilotPanel extends JPanel {
                 explainErrorBtn.setEnabled(true);
                 stopAgentBtn.setVisible(false);
                 agentCancelRequested = false;
+                currentWorker = null;
             }
-        }.execute();
+        };
+        currentWorker = worker;
+        worker.execute();
     }
 
     /** Updates the status label with an estimate of the current context size. */
