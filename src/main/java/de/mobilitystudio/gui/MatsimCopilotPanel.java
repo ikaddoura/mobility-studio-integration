@@ -930,10 +930,11 @@ public class MatsimCopilotPanel extends JPanel {
         StringBuilder sb = new StringBuilder();
         int chars;
         if (m == Mode.AGENT) {
+            String actualAgentSysPrompt = effectiveAgentSystemPrompt(); // <-- CHANGE IS HERE
             sb.append("=== AGENT MODE CONTEXT ===\n\n");
-            sb.append("System prompt (").append(AGENT_SYSTEM_PROMPT.length()).append(" chars):\n");
-            sb.append(AGENT_SYSTEM_PROMPT).append("\n\n");
-            chars = AGENT_SYSTEM_PROMPT.length();
+            sb.append("System prompt (").append(actualAgentSysPrompt.length()).append(" chars):\n");
+            sb.append(actualAgentSysPrompt).append("\n\n");
+            chars = actualAgentSysPrompt.length();
             if (!agentContents.isEmpty()) {
                 sb.append("--- Gemini contents[] (").append(agentContents.size()).append(" turns) ---\n");
                 for (int i = 0; i < agentContents.size(); i++) {
@@ -1122,8 +1123,7 @@ public class MatsimCopilotPanel extends JPanel {
             + "  - The most common matches and the RIGHT remediation:\n"
             + "      'output directory ... already exists and is not empty'\n"
             + "          → tell the user to click the 'Delete' button next to the output directory\n"
-            + "            in the GUI. Do NOT change controller.overwriteFiles unless the user\n"
-            + "            explicitly asked for that behaviour.\n"
+            + "            in the GUI. Or better, in agent mode change the config parameter controller.overwriteFiles to allow the agent to try around.\n"
             + "      'OutOfMemoryError' / 'Java heap space' / 'GC overhead limit exceeded'\n"
             + "          → tell the user to increase the 'Memory' (MB) text field in the GUI.\n"
             + "            Do NOT touch the config.\n"
