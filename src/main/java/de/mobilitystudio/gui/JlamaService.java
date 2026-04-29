@@ -128,7 +128,9 @@ final class JlamaService {
             if (re.getCause() instanceof IOException ioe) throw ioe;
             throw new IOException(re.getMessage() == null ? re.toString() : re.getMessage(), re);
         } catch (Exception ex) {
-            throw new IOException(ex.getMessage() == null ? ex.toString() : ex.getMessage(), ex);
+            // Translate unsupported-CPU/network errors that surface during generation as well
+            // (not just during model loading).
+            throw translateLoadError(fullModelName, ex);
         }
     }
 
@@ -136,10 +138,36 @@ final class JlamaService {
      * Map the most common (and most cryptic) JLama load failures to actionable
      * messages. Walks the cause chain looking for known signatures.
      */
-    private static IOException translateLoadError(String modelName, Throwable t) {
+    static IOException translateLoadError(String modelName, Throwable t) {
         Throwable cur = t;
         while (cur != null) {
             String msg = String.valueOf(cur.getMessage());
+            // No internet / DNS failure while downloading from HuggingFace.
+            if (cur instanceof java.net.UnknownHostException
+                    || cur instanceof java.net.NoRouteToHostException) {
+                return new IOException(
+                        "Could not reach " + msg + " to download model '" + modelName + "'.\n"
+                                + "Check your internet connection. Once the model is downloaded once,\n"
+                                + "it is cached in " + DEFAULT_MODEL_DIR + " and works fully offline.", t);
+            }
+            if (cur instanceof java.net.ConnectException
+                    || cur instanceof java.net.SocketTimeoutException) {
+                return new IOException(
+                        "Network error while downloading model '" + modelName + "': " + msg
+                                + "\nCheck your internet connection (or proxy settings) and try again.", t);
+            }
+            // Apple Silicon / unsupported vector species. JLama's Panama operations
+            // currently only support ARM_512 (SVE) on aarch64; ARM_128 (NEON) is unimplemented.
+            if (msg.contains("ARM_128") || msg.contains("ARM_64")) {
+                return new IOException(
+                        "JLama does not support this CPU's vector instruction set (" + msg + ").\n"
+                                + "On Apple Silicon (M1/M2/M3) the embedded JLama provider currently fails\n"
+                                + "with 'ARM_128' because JLama's Panama backend is built for SVE (ARM_512),\n"
+                                + "which macOS does not expose. Workarounds:\n"
+                                + "  - Use the 'Ollama (local)' provider instead - it has native arm64\n"
+                                + "    binaries and runs the same models faster.\n"
+                                + "  - Or use a cloud provider (OpenAI / Anthropic / Gemini / OpenRouter).", t);
+            }
             // Missing JVM module (Vector API).
             if (cur instanceof NoClassDefFoundError
                     || cur instanceof ClassNotFoundException) {

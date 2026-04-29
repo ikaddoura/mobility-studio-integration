@@ -23,6 +23,7 @@ import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.BiFunction;
 import java.util.function.Supplier;
 
@@ -62,10 +63,10 @@ final class MatsimAgentTools {
      */
     private static final int MAX_CONFIG_CHARS = 500_000;
     /** Maximum number of log lines returned by {@code tail_log}. */
-    private static final int DEFAULT_TAIL_LINES = 80;
-    private static final int MAX_TAIL_LINES = 500;
+    private static final int DEFAULT_TAIL_LINES = 200;
+    private static final int MAX_TAIL_LINES = 2000;
     /** Tail size embedded in {@code wait_for_run} responses. */
-    private static final int RUN_RESULT_TAIL_LINES = 60;
+    private static final int RUN_RESULT_TAIL_LINES = 400;
 
     private static final ObjectMapper M = new ObjectMapper();
 
@@ -95,6 +96,19 @@ final class MatsimAgentTools {
     private final RunController runController;
     private final ApprovalCallback approver;
 
+    /**
+     * Per-file fingerprint of the most recent successful read or write performed
+     * during this agent session. Used to short-circuit duplicate reads of unchanged
+     * files (the single biggest token-waster in long agent loops).
+     */
+    private static final class FileFingerprint {
+        final long mtime;
+        final long size;
+        FileFingerprint(long mtime, long size) { this.mtime = mtime; this.size = size; }
+        boolean matches(File f) { return f.lastModified() == mtime && f.length() == size; }
+    }
+    private final Map<String, FileFingerprint> readCache = new ConcurrentHashMap<>();
+
     MatsimAgentTools(Supplier<File> configFileSupplier, JTextArea stdOut, JTextArea stdErr,
                      RunController runController, ApprovalCallback approver) {
         this.configFileSupplier = configFileSupplier != null ? configFileSupplier : () -> null;
@@ -117,8 +131,13 @@ final class MatsimAgentTools {
                                 "Maximum number of lines per stream (default 200, max 2000)"))));
 
         tools.add(new ToolSpec("read_config",
-                "Read the currently selected MATSim configuration XML file and return its full text.",
-                schema()));
+                "Read the currently selected MATSim configuration XML file and return its full text. "
+                        + "If the file is unchanged since you last read or wrote it in this conversation, "
+                        + "this tool returns a tiny stub asking you to reuse the earlier content (token saver). "
+                        + "Pass force=true only when the user explicitly asks for a fresh re-read.",
+                schema(
+                        prop("force", "boolean",
+                                "Bypass the unchanged-file cache and always return the full content."))));
 
         tools.add(new ToolSpec("write_config",
                 "Overwrite the currently selected MATSim configuration XML file. A timestamped "
@@ -136,10 +155,14 @@ final class MatsimAgentTools {
                                 "Path relative to the config file's directory. Use '' or '.' for the root."))));
 
         tools.add(new ToolSpec("read_file",
-                "Read a UTF-8 text file inside the scenario folder. Truncated to ~200 KB.",
+                "Read a UTF-8 text file inside the scenario folder. Truncated to ~200 KB. "
+                        + "Cached: returns an 'unchanged' stub if you have already read this file in "
+                        + "this conversation and it has not been modified.",
                 requiredSchema(new String[] { "rel_path" },
                         prop("rel_path", "string",
-                                "Path relative to the config file's directory"))));
+                                "Path relative to the config file's directory"),
+                        prop("force", "boolean",
+                                "Bypass the unchanged-file cache."))));
 
         tools.add(new ToolSpec("start_matsim",
                 "Start a MATSim simulation in the background using the GUI's current settings. "
@@ -217,7 +240,7 @@ final class MatsimAgentTools {
         try {
             switch (toolName) {
                 case "tail_log":     return tailLog(args);
-                case "read_config":  return readConfig();
+                case "read_config":  return readConfig(args);
                 case "write_config": return writeConfig(args);
                 case "list_dir":     return listDir(args);
                 case "read_file":    return readFile(args);
@@ -269,21 +292,36 @@ final class MatsimAgentTools {
     private ObjectNode tailLog(JsonNode args) {
         int n = clamp(args.path("max_lines").asInt(DEFAULT_TAIL_LINES), 1, MAX_TAIL_LINES);
         ObjectNode r = M.createObjectNode();
-        r.put("stdout", lastLines(stdOut == null ? "" : stdOut.getText(), n));
-        r.put("stderr", lastLines(stdErr == null ? "" : stdErr.getText(), n));
+        r.put("stdout", smartExtractLines(stdOut == null ? "" : stdOut.getText(), n));
+        r.put("stderr", smartExtractLines(stdErr == null ? "" : stdErr.getText(), n));
         r.put("running", runController != null && runController.isRunning());
         return r;
     }
 
-    private ObjectNode readConfig() throws IOException {
+    private ObjectNode readConfig(JsonNode args) throws IOException {
         File f = configFileSupplier.get();
         if (f == null || !f.isFile()) return error("No config file is currently selected in the GUI.");
+        boolean force = args != null && args.path("force").asBoolean(false);
+        // If the agent already received this file's content earlier and nothing has changed
+        // on disk since then, return a tiny stub instead of re-sending ~40 KB of XML.
+        FileFingerprint fp = readCache.get(f.getAbsolutePath());
+        if (!force && fp != null && fp.matches(f)) {
+            ObjectNode r = M.createObjectNode();
+            r.put("path", f.getAbsolutePath());
+            r.put("size", f.length());
+            r.put("unchanged", true);
+            r.put("hint", "Config file is unchanged since you last read it (or last wrote it). "
+                    + "Use the content from your earlier read_config / write_config in this conversation. "
+                    + "If you really need a fresh copy, mention 'force re-read' in your next user message.");
+            return r;
+        }
         String content = Files.readString(f.toPath());
         if (content.length() > MAX_CONFIG_CHARS) {
             return error("Config file is " + content.length() + " chars - too large to return safely "
                     + "(limit " + MAX_CONFIG_CHARS + "). Use read_file with rel_path='" + f.getName()
                     + "' to fetch slices, then write_config with the full content you constructed.");
         }
+        readCache.put(f.getAbsolutePath(), new FileFingerprint(f.lastModified(), f.length()));
         ObjectNode r = M.createObjectNode();
         r.put("path", f.getAbsolutePath());
         r.put("size", content.length());
@@ -334,6 +372,9 @@ final class MatsimAgentTools {
             Files.copy(f.toPath(), backup, StandardCopyOption.REPLACE_EXISTING);
         }
         Files.writeString(f.toPath(), content);
+        // Remember the new fingerprint so a subsequent read_config returns the
+        // tiny "unchanged" stub instead of re-sending the full XML to the model.
+        readCache.put(f.getAbsolutePath(), new FileFingerprint(f.lastModified(), f.length()));
 
         ObjectNode r = M.createObjectNode();
         r.put("path", f.getAbsolutePath());
@@ -372,9 +413,20 @@ final class MatsimAgentTools {
         if (rel.isEmpty()) return error("Argument 'rel_path' is required.");
         File f = resolveSandboxed(root, rel);
         if (!f.isFile()) return error("Not a regular file: " + rel);
+        boolean force = args.path("force").asBoolean(false);
+        FileFingerprint fp = readCache.get(f.getAbsolutePath());
+        if (!force && fp != null && fp.matches(f)) {
+            ObjectNode r = M.createObjectNode();
+            r.put("path", f.getAbsolutePath());
+            r.put("size", f.length());
+            r.put("unchanged", true);
+            r.put("hint", "File unchanged since you last read it - reuse the earlier content.");
+            return r;
+        }
         byte[] bytes = Files.readAllBytes(f.toPath());
         boolean truncated = bytes.length > MAX_READ_BYTES;
         String content = new String(truncated ? Arrays.copyOf(bytes, MAX_READ_BYTES) : bytes);
+        if (!truncated) readCache.put(f.getAbsolutePath(), new FileFingerprint(f.lastModified(), f.length()));
         ObjectNode r = M.createObjectNode();
         r.put("path", f.getAbsolutePath());
         r.put("content", content);
@@ -410,8 +462,8 @@ final class MatsimAgentTools {
             r.put("timed_out", false);
             r.put("exit_code", exit);
         }
-        r.put("stdout_tail", lastLines(stdOut == null ? "" : stdOut.getText(), RUN_RESULT_TAIL_LINES));
-        r.put("stderr_tail", lastLines(stdErr == null ? "" : stdErr.getText(), RUN_RESULT_TAIL_LINES));
+        r.put("stdout_tail", smartExtractLines(stdOut == null ? "" : stdOut.getText(), RUN_RESULT_TAIL_LINES));
+        r.put("stderr_tail", smartExtractLines(stdErr == null ? "" : stdErr.getText(), RUN_RESULT_TAIL_LINES));
         return r;
     }
 
@@ -451,12 +503,37 @@ final class MatsimAgentTools {
         return candidate.toFile();
     }
 
-    private static String lastLines(String s, int n) {
+    private static String smartExtractLines(String s, int tailLinesCount) {
         if (s == null || s.isEmpty()) return "";
         String[] lines = s.split("\\R", -1);
-        if (lines.length <= n) return s;
-        StringBuilder sb = new StringBuilder("…(" + (lines.length - n) + " earlier lines truncated)…\n");
-        for (int i = lines.length - n; i < lines.length; i++) sb.append(lines[i]).append('\n');
+        if (lines.length <= tailLinesCount) return s;
+
+        // Find the first error line
+        int firstErrIdx = -1;
+        for (int i = 0; i < lines.length - tailLinesCount; i++) {
+            if (lines[i].contains("Exception in thread") || lines[i].startsWith("ERROR") || lines[i].contains("Caused by:")) {
+                firstErrIdx = i;
+                break;
+            }
+        }
+
+        StringBuilder sb = new StringBuilder();
+        if (firstErrIdx >= 0) {
+            sb.append("--- FIRST ERROR/EXCEPTION FOUND ---\n");
+            // Append the error and up to 30 lines following it
+            int endErrIdx = Math.min(firstErrIdx + 30, lines.length - tailLinesCount);
+            for (int i = firstErrIdx; i < endErrIdx; i++) {
+                sb.append(lines[i]).append('\n');
+            }
+            sb.append("\n…(").append(lines.length - tailLinesCount - endErrIdx).append(" middle lines truncated)…\n\n");
+        } else {
+            sb.append("…(").append(lines.length - tailLinesCount).append(" earlier lines truncated)…\n");
+        }
+
+        sb.append("--- LOG TAIL ---\n");
+        for (int i = lines.length - tailLinesCount; i < lines.length; i++) {
+            sb.append(lines[i]).append('\n');
+        }
         return sb.toString();
     }
 

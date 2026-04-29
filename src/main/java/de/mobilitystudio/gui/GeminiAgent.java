@@ -203,7 +203,7 @@ final class GeminiAgent {
                 .POST(HttpRequest.BodyPublishers.ofString(bodyStr)).build();
         HttpResponse<String> resp = http.send(req, HttpResponse.BodyHandlers.ofString());
         if (resp.statusCode() / 100 != 2) {
-            throw new IOException("Gemini HTTP " + resp.statusCode() + ": " + resp.body());
+            throw new IOException(MatsimCopilotPanel.formatGeminiError(model, resp.statusCode(), resp.body()));
         }
         JsonNode parsed = M.readTree(resp.body());
         if (!(parsed instanceof ObjectNode)) {

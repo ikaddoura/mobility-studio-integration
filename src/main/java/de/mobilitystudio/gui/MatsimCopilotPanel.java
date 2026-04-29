@@ -96,6 +96,7 @@ public class MatsimCopilotPanel extends JPanel {
     private static final String PREF_INCLUDE_CONFIG = "copilot.include.config";
     private static final String PREF_MODE = "copilot.mode";
     private static final String PREF_AUTO_APPROVE = "copilot.agent.autoApprove";
+    private static final String PREF_INSTRUCTIONS = "copilot.instructions";
 
     private static final int MAX_LOG_CHARS = 12_000;
     private static final int MAX_CONFIG_CHARS = 60_000;
@@ -118,13 +119,17 @@ public class MatsimCopilotPanel extends JPanel {
                         "claude-3-5-haiku-latest" },
                 true),
         GEMINI("Google Gemini", "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
-                new String[] { "gemini-2.5-pro", "gemini-2.5-flash", "gemini-1.5-pro", "gemini-1.5-flash" }, true),
+                new String[] { "gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.5-flash-lite",
+                        "gemini-2.0-flash", "gemini-2.0-flash-lite" }, true),
         OPENROUTER("OpenRouter", "https://openrouter.ai/api/v1/chat/completions",
                 new String[] { "openai/gpt-4o", "anthropic/claude-sonnet-4", "google/gemini-2.5-pro",
+                        "moonshotai/kimi-k2.6", "moonshotai/kimi-k2",
+                        "google/gemma-4-27b-it", "google/gemma-3-27b-it",
                         "meta-llama/llama-3.3-70b-instruct", "mistralai/mistral-large" },
                 true),
         OLLAMA("Ollama (local)", "http://localhost:11434/v1/chat/completions",
                 new String[] { "qwen2.5-coder:14b", "qwen2.5-coder:7b", "llama3.2", "llama3.1",
+                        "kimi-k2", "gemma3", "gemma2",
                         "mistral", "phi3", "hermes3" }, false),
         JLAMA("Embedded (Java)", "jlama://local",
                 JlamaService.DEFAULT_MODELS, false);
@@ -159,6 +164,7 @@ public class MatsimCopilotPanel extends JPanel {
     private final JCheckBox includeLogBox = new JCheckBox("Send recent log/error output as context", true);
     private final JCheckBox includeConfigBox = new JCheckBox("Send selected configuration file as context", false);
     private final JCheckBox autoApproveBox = new JCheckBox("Agent: auto-approve all actions (\u26A0 risky)", false);
+    private final JTextArea instructionsArea = new JTextArea(8, 60);
     private final JButton settingsToggle = new JButton("\u2699 Settings \u25BC");
     private JPanel settingsPanel;
     private final JTextPane chatPane = new JTextPane();
@@ -166,6 +172,7 @@ public class MatsimCopilotPanel extends JPanel {
     private final JButton sendBtn = new JButton("Send  (Ctrl+Enter)");
     private final JButton explainErrorBtn = new JButton("Explain last error");
     private final JButton clearBtn = new JButton("New chat");
+    private final JButton viewCtxBtn = new JButton("View context");
     private final JButton stopAgentBtn = new JButton("Stop");
     private final JLabel statusLabel = new JLabel(" ");
 
@@ -242,6 +249,10 @@ public class MatsimCopilotPanel extends JPanel {
         topBar.add(includeLogBox);
         topBar.add(includeConfigBox);
         topBar.add(autoApproveBox);
+        // MATSim version label intentionally not shown here: it widened the top bar and
+        // prevented the checkboxes/dropdowns from shrinking when the window was resized.
+        // The Copilot is still informed of the version via MatsimKnowledgeBase.matsimVersion()
+        // when the system prompt is built.
         header.add(topBar, BorderLayout.NORTH);
 
         settingsPanel = new JPanel(new GridBagLayout());
@@ -261,6 +272,16 @@ public class MatsimCopilotPanel extends JPanel {
         c.gridx = 0; c.gridy = 1; settingsPanel.add(new JLabel("API key:"), c);
         c.gridx = 1; c.gridwidth = 2; settingsPanel.add(apiKeyField, c); c.gridwidth = 1;
         c.gridx = 3; settingsPanel.add(saveKeyBtn, c);
+        
+        c.gridx = 0; c.gridy = 2; c.gridwidth = 4;
+        c.insets = new Insets(8, 4, 2, 4);
+        settingsPanel.add(new JLabel("Custom System Instructions (appended to AI context):"), c);
+
+        c.gridy = 3; c.weighty = 1.0; c.fill = GridBagConstraints.BOTH;
+        instructionsArea.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 12));
+        instructionsArea.setLineWrap(true);
+        instructionsArea.setWrapStyleWord(true);
+        settingsPanel.add(new JScrollPane(instructionsArea), c);
 
         header.add(settingsPanel, BorderLayout.CENTER);
         // start collapsed unless user previously had it open
@@ -286,6 +307,7 @@ public class MatsimCopilotPanel extends JPanel {
         actions.add(statusLabel);
         actions.add(Box.createHorizontalStrut(20));
         actions.add(clearBtn);
+        actions.add(viewCtxBtn);
         actions.add(explainErrorBtn);
         actions.add(stopAgentBtn);
         actions.add(sendBtn);
@@ -321,6 +343,14 @@ public class MatsimCopilotPanel extends JPanel {
         includeLogBox.addActionListener(e -> prefs.putBoolean(PREF_INCLUDE_LOG, includeLogBox.isSelected()));
         includeConfigBox.addActionListener(e -> prefs.putBoolean(PREF_INCLUDE_CONFIG, includeConfigBox.isSelected()));
         autoApproveBox.addActionListener(e -> prefs.putBoolean(PREF_AUTO_APPROVE, autoApproveBox.isSelected()));
+        
+        instructionsArea.getDocument().addDocumentListener(new javax.swing.event.DocumentListener() {
+            @Override public void insertUpdate(javax.swing.event.DocumentEvent e) { save(); }
+            @Override public void removeUpdate(javax.swing.event.DocumentEvent e) { save(); }
+            @Override public void changedUpdate(javax.swing.event.DocumentEvent e) { save(); }
+            private void save() { prefs.put(PREF_INSTRUCTIONS, instructionsArea.getText()); }
+        });
+        
         modeBox.addActionListener(e -> {
             Mode m = (Mode) modeBox.getSelectedItem();
             if (m == null) return;
@@ -337,6 +367,7 @@ public class MatsimCopilotPanel extends JPanel {
             chatPane.setText("");
             appendSystem("New chat started.\n");
         });
+        viewCtxBtn.addActionListener(e -> showContextDialog());
         stopAgentBtn.addActionListener(e -> {
             agentCancelRequested = true;
             statusLabel.setText("Cancelling…");
@@ -465,7 +496,8 @@ public class MatsimCopilotPanel extends JPanel {
         includeLogBox.setSelected(prefs.getBoolean(PREF_INCLUDE_LOG, true));
         includeConfigBox.setSelected(prefs.getBoolean(PREF_INCLUDE_CONFIG, false));
         autoApproveBox.setSelected(prefs.getBoolean(PREF_AUTO_APPROVE, false));
-
+        instructionsArea.setText(prefs.get(PREF_INSTRUCTIONS, MatsimKnowledgeBase.DEFAULT_INSTRUCTIONS));
+        
         String savedMode = prefs.get(PREF_MODE, Mode.CHAT.name());
         try {
             modeBox.setSelectedItem(Mode.valueOf(savedMode));
@@ -558,11 +590,15 @@ public class MatsimCopilotPanel extends JPanel {
         explainErrorBtn.setEnabled(false);
         stopAgentBtn.setVisible(true);
         stopAgentBtn.setEnabled(true);
-        statusLabel.setText("Thinking…");
+        statusLabel.setText("Thinking… (" + chatContextSizeLabel() + ")");
+        
+        // Grab the dynamic instructions from the UI thread before entering the background thread
+        String dynamicSystemPrompt = effectiveSystemPrompt();
 
         SwingWorker<String, Void> worker = new SwingWorker<String, Void>() {
             @Override protected String doInBackground() throws Exception {
-                return callProvider(p, model, apiKey, history);
+                // Pass it into callProvider
+                return callProvider(p, model, apiKey, history, dynamicSystemPrompt); 
             }
             @Override protected void done() {
                 String reply;
@@ -585,7 +621,7 @@ public class MatsimCopilotPanel extends JPanel {
                 }
                 history.add(Map.entry("assistant", reply));
                 replacePlaceholderWithAssistant(reply);
-                statusLabel.setText(" ");
+                statusLabel.setText("Last turn: " + chatContextSizeLabel());
                 sendBtn.setEnabled(true);
                 explainErrorBtn.setEnabled(true);
                 stopAgentBtn.setVisible(false);
@@ -601,17 +637,33 @@ public class MatsimCopilotPanel extends JPanel {
         String out = stdOutSource != null ? stdOutSource.getText() : "";
         StringBuilder sb = new StringBuilder();
         if (err != null && !err.isBlank()) {
-            sb.append("[stderr]\n").append(tail(err, MAX_LOG_CHARS / 2)).append("\n");
+            sb.append("[stderr]\n").append(smartLogExtract(err, MAX_LOG_CHARS / 2)).append("\n");
         }
         if (out != null && !out.isBlank()) {
-            sb.append("[stdout]\n").append(tail(out, MAX_LOG_CHARS / 2));
+            sb.append("[stdout]\n").append(smartLogExtract(out, MAX_LOG_CHARS / 2));
         }
         return sb.toString();
     }
 
-    private static String tail(String s, int maxChars) {
-        if (s.length() <= maxChars) return s;
-        return "…(truncated)…\n" + s.substring(s.length() - maxChars);
+    /** Extracts the FIRST error/exception and the TAIL of the log to capture the root cause without blowing up tokens. */
+    private static String smartLogExtract(String s, int maxTailChars) {
+        if (s.length() <= maxTailChars) return s;
+
+        // Find the first major exception or error
+        int errIdx = s.indexOf("Exception in thread");
+        if (errIdx < 0) errIdx = s.indexOf("ERROR");
+        if (errIdx < 0) errIdx = s.indexOf("Caused by:");
+
+        String head = "";
+        if (errIdx >= 0 && errIdx < s.length() - maxTailChars) {
+            // Grab the error and the ~2000 characters immediately following it to catch the message/trace
+            int endIdx = Math.min(errIdx + 2000, s.length() - maxTailChars);
+            head = "--- FIRST ERROR/EXCEPTION FOUND ---\n" + s.substring(errIdx, endIdx) + "\n\n... (middle skipped) ...\n\n";
+        } else {
+            head = "... (start skipped) ...\n\n";
+        }
+
+        return head + "--- LOG TAIL ---\n" + s.substring(s.length() - maxTailChars);
     }
 
     /**
@@ -739,6 +791,37 @@ public class MatsimCopilotPanel extends JPanel {
         appendUser(userText);
         agentCancelRequested = false;
 
+        // Build the actual user message that the model will see. On the FIRST turn of a
+        // fresh conversation, pre-attach the recent log + a one-line config summary so the
+        // agent doesn't have to spend tokens calling tail_log / read_config just to get
+        // started. On subsequent turns we only send the bare user text - any additional
+        // info will be pulled via tools.
+        boolean firstTurn = agentContents.isEmpty() && agentMessages.isEmpty();
+        String agentUserText = userText;
+        if (firstTurn) {
+            StringBuilder enriched = new StringBuilder(userText);
+            File cfg = configFileSupplier.get();
+            if (cfg != null) {
+                enriched.append("\n\n---\nActive scenario:\n  config file: ")
+                        .append(cfg.getAbsolutePath())
+                        .append("\n  scenario dir: ").append(cfg.getParentFile().getAbsolutePath());
+                
+                // --- DELETED BLOCK ---
+                // The automatic config injection has been removed to save tokens.
+                // The agent will now use the read_config tool on its first turn
+                // to get the config, which is more efficient for the overall conversation.
+            }
+            String logCtx = buildLogContext();
+            if (!logCtx.isEmpty()) {
+                enriched.append("\n\n---\nMost recent MATSim run log (Smart Extracted). The actual root\n")
+                        .append("cause is usually a single sentence near the FIRST 'Exception in thread'\n")
+                        .append("or 'ERROR' line - quote it before proposing any fix:\n```\n")
+                        .append(logCtx).append("\n```");
+            }
+            agentUserText = enriched.toString();
+        }
+        final String agentUserTextFinal = agentUserText;
+
         sendBtn.setEnabled(false);
         explainErrorBtn.setEnabled(false);
         stopAgentBtn.setVisible(true);
@@ -776,14 +859,14 @@ public class MatsimCopilotPanel extends JPanel {
                 if (agentCancelRequested) return "[cancelled before start]";
                 if (providerFinal == Provider.GEMINI) {
                     GeminiAgent agent = new GeminiAgent(http, providerFinal.defaultEndpoint,
-                            modelFinal, apiKeyFinal, tools, AGENT_SYSTEM_PROMPT);
-                    return agent.runTurn(agentContents, userText, listener);
+                            modelFinal, apiKeyFinal, tools, effectiveAgentSystemPrompt());
+                    return agent.runTurn(agentContents, agentUserTextFinal, listener);
                 } else {
                     boolean openrouter = providerFinal == Provider.OPENROUTER;
                     String key = providerFinal == Provider.OLLAMA ? "" : apiKeyFinal;
                     OpenAiToolAgent agent = new OpenAiToolAgent(http, providerFinal.defaultEndpoint,
-                            modelFinal, key, openrouter, tools, AGENT_SYSTEM_PROMPT);
-                    return agent.runTurn(agentMessages, userText, listener);
+                            modelFinal, key, openrouter, tools, effectiveAgentSystemPrompt());
+                    return agent.runTurn(agentMessages, agentUserTextFinal, listener);
                 }
             }
             @Override protected void done() {
@@ -806,7 +889,11 @@ public class MatsimCopilotPanel extends JPanel {
                     }
                 }
                 appendAgentFinal(reply);
-                statusLabel.setText(" ");
+                int chars = 0;
+                for (ObjectNode n : agentContents) chars += n.toString().length();
+                for (ObjectNode n : agentMessages) chars += n.toString().length();
+                statusLabel.setText(String.format("Agent finished. Context ~%,d chars / ~%,d tokens",
+                        chars, chars / 4));
                 sendBtn.setEnabled(true);
                 explainErrorBtn.setEnabled(true);
                 stopAgentBtn.setVisible(false);
@@ -825,6 +912,72 @@ public class MatsimCopilotPanel extends JPanel {
         for (ObjectNode n : agentMessages) chars += n.toString().length();
         statusLabel.setText(String.format("Agent: working… (~%,d ctx chars, ~%,d tokens)",
                 chars, chars / 4));
+    }
+
+    /** Returns the rough size (chars / tokens) of the current chat-mode history. */
+    private String chatContextSizeLabel() {
+        int chars = SYSTEM_PROMPT.length();
+        for (Map.Entry<String, String> m : history) chars += m.getValue().length();
+        return String.format("~%,d ctx chars / ~%,d tokens", chars, chars / 4);
+    }
+
+    /**
+     * Pops up a dialog showing the EXACT context that would be sent to the model on the
+     * next call. Useful for debugging unexpectedly large prompts / token bills.
+     */
+    private void showContextDialog() {
+        Mode m = (Mode) modeBox.getSelectedItem();
+        StringBuilder sb = new StringBuilder();
+        int chars;
+        if (m == Mode.AGENT) {
+            sb.append("=== AGENT MODE CONTEXT ===\n\n");
+            sb.append("System prompt (").append(AGENT_SYSTEM_PROMPT.length()).append(" chars):\n");
+            sb.append(AGENT_SYSTEM_PROMPT).append("\n\n");
+            chars = AGENT_SYSTEM_PROMPT.length();
+            if (!agentContents.isEmpty()) {
+                sb.append("--- Gemini contents[] (").append(agentContents.size()).append(" turns) ---\n");
+                for (int i = 0; i < agentContents.size(); i++) {
+                    String s = agentContents.get(i).toPrettyString();
+                    chars += s.length();
+                    sb.append("\n[").append(i).append("]\n").append(s).append('\n');
+                }
+            }
+            if (!agentMessages.isEmpty()) {
+                sb.append("--- OpenAI messages[] (").append(agentMessages.size()).append(" turns) ---\n");
+                for (int i = 0; i < agentMessages.size(); i++) {
+                    String s = agentMessages.get(i).toPrettyString();
+                    chars += s.length();
+                    sb.append("\n[").append(i).append("]\n").append(s).append('\n');
+                }
+            }
+        } else {
+            String actualSysPrompt = effectiveSystemPrompt();
+            sb.append("=== CHAT MODE CONTEXT ===\n\n");
+            sb.append("System prompt (").append(actualSysPrompt.length()).append(" chars):\n");
+            sb.append(actualSysPrompt).append("\n\n");
+            chars = actualSysPrompt.length();
+            sb.append("--- History (").append(history.size()).append(" messages) ---\n");
+            for (int i = 0; i < history.size(); i++) {
+                Map.Entry<String, String> e = history.get(i);
+                chars += e.getValue().length();
+                sb.append("\n[").append(i).append("] ").append(e.getKey())
+                  .append(" (").append(e.getValue().length()).append(" chars):\n")
+                  .append(e.getValue()).append('\n');
+            }
+        }
+        sb.insert(0, String.format("Total: ~%,d chars  ≈  ~%,d tokens (est. /4)%n%n",
+                chars, chars / 4));
+
+        JTextArea ta = new JTextArea(sb.toString(), 30, 100);
+        ta.setEditable(false);
+        ta.setLineWrap(true);
+        ta.setWrapStyleWord(true);
+        ta.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 11));
+        ta.setCaretPosition(0);
+        JScrollPane sp = new JScrollPane(ta);
+        sp.setPreferredSize(new Dimension(900, 600));
+        JOptionPane.showMessageDialog(this, sp,
+                "Context that will be sent to the AI", JOptionPane.PLAIN_MESSAGE);
     }
 
     /**
@@ -878,6 +1031,7 @@ public class MatsimCopilotPanel extends JPanel {
     private static String summariseResult(JsonNode result) {
         if (result == null || result.isNull()) return "ok";
         // Pick a few telling fields, otherwise show field-name overview.
+        if (result.has("unchanged") && result.get("unchanged").asBoolean()) return "unchanged (cached)";
         if (result.has("exit_code"))   return "exit_code=" + result.get("exit_code").asInt();
         if (result.has("timed_out") && result.get("timed_out").asBoolean()) return "timed out";
         if (result.has("started"))     return "started=" + result.get("started").asBoolean();
@@ -912,6 +1066,16 @@ public class MatsimCopilotPanel extends JPanel {
 
     // ------------------------------------------------------- provider calls
 
+    /** Effective chat-mode system prompt, with optional MATSim primer + GUI/version block appended. */
+    private String effectiveSystemPrompt() {
+        return SYSTEM_PROMPT + MatsimKnowledgeBase.extraSystemPrompt(instructionsArea.getText());
+    }
+
+    /** Effective agent-mode system prompt, with optional MATSim primer + GUI/version block appended. */
+    private String effectiveAgentSystemPrompt() {
+        return AGENT_SYSTEM_PROMPT + MatsimKnowledgeBase.extraSystemPrompt(instructionsArea.getText());
+    }
+
     private static final String SYSTEM_PROMPT =
             "You are MATSim Copilot, a friendly assistant that helps the user run MATSim "
             + "simulations. You explain warnings and errors in plain language and suggest "
@@ -931,29 +1095,84 @@ public class MatsimCopilotPanel extends JPanel {
             + "  2. When write_config is needed, return the FULL new XML content (no diff/patch).\n"
             + "     Make the smallest change required and preserve all other parameters.\n"
             + "  3. After write_config, you may start_matsim and then wait_for_run to verify.\n"
-            + "  4. start_matsim, write_config and stop_matsim require user approval - briefly "
+            + "  4. start_matsim, write_config and stop_matsim require user approval - briefly\n"
             + "     justify them in the 'reason' argument.\n"
             + "  5. Never invent file paths; use list_dir / read_file to discover them.\n"
-            + "  6. Stop after the user's goal is met and reply with a short summary of what you "
-            + "     changed and what the result was.\n"
-            + "  7. Token discipline: NEVER re-call read_config, read_file or list_dir for "
-            + "     something you already have in this conversation. Older tool results are "
-            + "     summarised on subsequent turns to save tokens; if you truly need a fresh "
-            + "     read, mention it.\n"
-            + "  8. Prefer narrow tools and small limits (e.g. tail_log max_lines=40 when you "
-            + "     only need the last error).";
+            + "  6. Stop after the user's goal is met and reply with a short summary of what you\n"
+            + "     changed and what the result was.\n\n"
+            + "ERROR DIAGNOSIS (CRITICAL):\n"
+            + "  - EXCEPTIONS BEAT WARNINGS. WARN/INFO lines are noise unless they directly\n"
+            + "    explain the failure - never propose changes based on warnings while an\n"
+            + "    actual exception is present in the log.\n"
+            + "  - When wait_for_run returns a non-zero exit code, ALWAYS scroll back through the\n"
+            + "    stderr_tail / stdout_tail and identify the FIRST 'Exception in thread' / 'ERROR' /\n"
+            + "    'Caused by' line, plus the topmost human-readable error message. Many MATSim\n"
+            + "    errors print a long Guice/injection stack trace AFTER the actual root cause -\n"
+            + "    the root cause is usually a single sentence higher up (e.g. 'output directory\n"
+            + "    ... already exists and is not empty', 'No scoring parameters for activity X',\n"
+            + "    'Could not find file ...', 'OutOfMemoryError'). Quote that exact sentence in\n"
+            + "    your reply and base your fix on it - do NOT chase the Guice/injection wrapper\n"
+            + "    or invent unrelated config changes.\n"
+            + "  - The most common matches and the RIGHT remediation:\n"
+            + "      'output directory ... already exists and is not empty'\n"
+            + "          → tell the user to click the 'Delete' button next to the output directory\n"
+            + "            in the GUI. Do NOT change controller.overwriteFiles unless the user\n"
+            + "            explicitly asked for that behaviour.\n"
+            + "      'OutOfMemoryError' / 'Java heap space' / 'GC overhead limit exceeded'\n"
+            + "          → tell the user to increase the 'Memory' (MB) text field in the GUI.\n"
+            + "            Do NOT touch the config.\n"
+            + "      'No scoring parameters for activity type X'\n"
+            + "          → add an activityParams parameterset for X under scoring (typicalDuration\n"
+            + "            is mandatory).\n"
+            + "      'No such file' / 'Could not find file' for a network/plans/transit input\n"
+            + "          → use list_dir to find the right path; fix inputNetworkFile/inputPlansFile\n"
+            + "            in the config (do not invent paths).\n"
+            + "  - Touch ONE thing per attempt. Make the minimal change that addresses the quoted\n"
+            + "    error sentence and nothing else. Never alter unrelated parameters 'just in\n"
+            + "    case'.\n"
+            + "  - DIFF BETWEEN ATTEMPTS. After each wait_for_run, compare the new error sentence\n"
+            + "    to the previous one:\n"
+            + "      * Same error  → your last change did not help; REVERT it (write_config back to\n"
+            + "                      the prior content) before trying something else.\n"
+            + "      * New error   → previous fix worked; now address the new root cause.\n"
+            + "      * No error (exit 0) → you're done. Summarise and stop.\n"
+            + "    Always state explicitly in your reasoning whether the error changed.\n"
+            + "  - If a tool result contains 'error', read the error message and either fix the\n"
+            + "    root cause or stop and ask the user; do not blindly retry.\n\n"
+            + "CONFIG SAFETY:\n"
+            + "  - Use ONLY parameter names that already exist in the user's config XML or that\n"
+            + "    you have seen in the MATSim config DTDs / source. If unsure, do not invent a\n"
+            + "    parameter - ask the user or stop. Wrongly named params silently break runs.\n"
+            + "  - When write_config is needed, return the FULL new XML content (no diff/patch).\n"
+            + "    Make the smallest possible change and preserve all other parameters verbatim.\n"
+            + "  - Always tell the user that they can also edit the config manually via the\n"
+            + "    'Edit config' button in the GUI - sometimes that's faster and safer than a\n"
+            + "    write_config tool call.\n\n"
+            + "TOKEN DISCIPLINE (this conversation costs real money):\n"
+            + "  - You ALREADY HAVE the config XML in this conversation after the first\n"
+            + "    read_config. Do NOT call read_config again unless write_config has been called\n"
+            + "    in between, or the user explicitly asks for a fresh read. The tool will return\n"
+            + "    a tiny 'unchanged' stub if you do - reuse the earlier content from your\n"
+            + "    context instead of asking again.\n"
+            + "  - Same for read_file and list_dir on directories you have already explored.\n"
+            + "  - Remember the changes YOU made via write_config - the file on disk now matches\n"
+            + "    the XML you sent. Don't re-read it just to 'confirm'.\n"
+            + "  - Older tool results are automatically summarised on subsequent turns; rely on\n"
+            + "    your own short-term memory of the latest config you wrote.\n"
+            + "  - Prefer narrow tools and small limits (e.g. tail_log max_lines=40 when you only\n"
+            + "    need the last error).";
 
     private String callProvider(Provider p, String model, String apiKey,
-                                List<Map.Entry<String, String>> hist) throws IOException, InterruptedException {
-        switch (p) {
-            case OPENAI:     return callOpenAiCompatible(p.defaultEndpoint, model, apiKey, hist, false);
-            case OPENROUTER: return callOpenAiCompatible(p.defaultEndpoint, model, apiKey, hist, true);
-            case OLLAMA:     return callOpenAiCompatible(p.defaultEndpoint, model, "", hist, false);
-            case ANTHROPIC:  return callAnthropic(p.defaultEndpoint, model, apiKey, hist);
-            case GEMINI:     return callGemini(p.defaultEndpoint, model, apiKey, hist);
-            case JLAMA:      return callJlama(model, hist);
-            default:         throw new IOException("Unknown provider: " + p);
-        }
+    		List<Map.Entry<String, String>> hist, String sysPrompt) throws IOException, InterruptedException {
+    	switch (p) {
+    	case OPENAI:     return callOpenAiCompatible(p.defaultEndpoint, model, apiKey, hist, false, sysPrompt);
+    	case OPENROUTER: return callOpenAiCompatible(p.defaultEndpoint, model, apiKey, hist, true, sysPrompt);
+    	case OLLAMA:     return callOpenAiCompatible(p.defaultEndpoint, model, "", hist, false, sysPrompt);
+    	case ANTHROPIC:  return callAnthropic(p.defaultEndpoint, model, apiKey, hist, sysPrompt);
+    	case GEMINI:     return callGemini(p.defaultEndpoint, model, apiKey, hist, sysPrompt);
+    	case JLAMA:      return callJlama(model, hist, sysPrompt);
+    	default:         throw new IOException("Unknown provider: " + p);
+    	}
     }
 
     /**
@@ -961,7 +1180,7 @@ public class MatsimCopilotPanel extends JPanel {
      * {@link JlamaService#DEFAULT_MODEL_DIR}, downloading it from HuggingFace if
      * necessary. Subsequent calls reuse the in-memory model.
      */
-    private String callJlama(String model, List<Map.Entry<String, String>> hist)
+    private String callJlama(String model, List<Map.Entry<String, String>> hist, String sysPrompt)
             throws IOException {
         if (!JlamaService.isAvailable()) {
             throw new IOException("Embedded (Java) provider is not available - the JLama "
@@ -977,16 +1196,17 @@ public class MatsimCopilotPanel extends JPanel {
         } else {
             latestUser = "";
         }
-        return JlamaService.chat(model, SYSTEM_PROMPT, prior, latestUser, 512, 0.3f);
+        return JlamaService.chat(model, sysPrompt, prior, latestUser, 512, 0.3f);
     }
 
     /** OpenAI-compatible Chat Completions (used for OpenAI, OpenRouter, and Ollama). */
     private String callOpenAiCompatible(String endpoint, String model, String apiKey,
-                                        List<Map.Entry<String, String>> hist, boolean openrouter) throws IOException, InterruptedException {
-        StringBuilder body = new StringBuilder();
-        body.append("{\"model\":").append(jsonStr(model)).append(",");
-        body.append("\"messages\":[");
-        body.append("{\"role\":\"system\",\"content\":").append(jsonStr(SYSTEM_PROMPT)).append("}");
+            List<Map.Entry<String, String>> hist, boolean openrouter, String sysPrompt) throws IOException, InterruptedException {
+StringBuilder body = new StringBuilder();
+body.append("{\"model\":").append(jsonStr(model)).append(",");
+body.append("\"messages\":[");
+// Use sysPrompt instead of SYSTEM_PROMPT
+body.append("{\"role\":\"system\",\"content\":").append(jsonStr(sysPrompt)).append("}");
         for (Map.Entry<String, String> m : hist) {
             body.append(",{\"role\":").append(jsonStr(m.getKey()))
                 .append(",\"content\":").append(jsonStr(m.getValue())).append("}");
@@ -1028,12 +1248,13 @@ public class MatsimCopilotPanel extends JPanel {
     }
 
     private String callAnthropic(String endpoint, String model, String apiKey,
-                                 List<Map.Entry<String, String>> hist) throws IOException, InterruptedException {
-        StringBuilder body = new StringBuilder();
-        body.append("{\"model\":").append(jsonStr(model)).append(",");
-        body.append("\"max_tokens\":2048,");
-        body.append("\"system\":").append(jsonStr(SYSTEM_PROMPT)).append(",");
-        body.append("\"messages\":[");
+    		List<Map.Entry<String, String>> hist, String sysPrompt) throws IOException, InterruptedException {
+    	StringBuilder body = new StringBuilder();
+    	body.append("{\"model\":").append(jsonStr(model)).append(",");
+    	body.append("\"max_tokens\":2048,");
+    	// Use sysPrompt instead of SYSTEM_PROMPT
+    	body.append("\"system\":").append(jsonStr(sysPrompt)).append(",");
+    	body.append("\"messages\":[");
         boolean first = true;
         for (Map.Entry<String, String> m : hist) {
             if (!first) body.append(",");
@@ -1060,13 +1281,14 @@ public class MatsimCopilotPanel extends JPanel {
     }
 
     private String callGemini(String endpointTemplate, String model, String apiKey,
-                              List<Map.Entry<String, String>> hist) throws IOException, InterruptedException {
-        String endpoint = endpointTemplate.replace("{model}", model) + "?key=" + apiKey;
+            List<Map.Entry<String, String>> hist, String sysPrompt) throws IOException, InterruptedException {
+    	String endpoint = endpointTemplate.replace("{model}", model) + "?key=" + apiKey;
 
-        StringBuilder body = new StringBuilder();
-        body.append("{\"systemInstruction\":{\"parts\":[{\"text\":")
-            .append(jsonStr(SYSTEM_PROMPT)).append("}]},");
-        body.append("\"contents\":[");
+    	StringBuilder body = new StringBuilder();
+    	// Use sysPrompt instead of SYSTEM_PROMPT
+    	body.append("{\"systemInstruction\":{\"parts\":[{\"text\":")
+    	.append(jsonStr(sysPrompt)).append("}]},");
+    	body.append("\"contents\":[");
         boolean first = true;
         for (Map.Entry<String, String> m : hist) {
             if (!first) body.append(",");
@@ -1083,12 +1305,67 @@ public class MatsimCopilotPanel extends JPanel {
                 .POST(HttpRequest.BodyPublishers.ofString(body.toString())).build();
         HttpResponse<String> resp = http.send(req, HttpResponse.BodyHandlers.ofString());
         if (resp.statusCode() / 100 != 2) {
-            throw new IOException("HTTP " + resp.statusCode() + ": " + resp.body());
+            throw new IOException(formatGeminiError(model, resp.statusCode(), resp.body()));
         }
         // Gemini: { "candidates":[{"content":{"parts":[{"text":"..."}]}}] }
         String text = JsonMini.findStringValue(resp.body(), "text");
         if (text == null) throw new IOException("No text in response: " + resp.body());
         return text;
+    }
+
+    /**
+     * Translate a Gemini error response (404 / 429 / 503 / …) to a single, friendly
+     * line. Falls back to the raw body if the JSON cannot be parsed.
+     */
+    static String formatGeminiError(String model, int status, String body) {
+        try {
+            com.fasterxml.jackson.databind.JsonNode root = new com.fasterxml.jackson.databind.ObjectMapper()
+                    .readTree(body);
+            com.fasterxml.jackson.databind.JsonNode err = root.path("error");
+            String message = err.path("message").asText("");
+            String statusName = err.path("status").asText("");
+            // Look for a RetryInfo.retryDelay field (e.g. "56s").
+            String retry = "";
+            for (com.fasterxml.jackson.databind.JsonNode d : err.path("details")) {
+                String type = d.path("@type").asText("");
+                if (type.contains("RetryInfo")) {
+                    retry = d.path("retryDelay").asText("");
+                    break;
+                }
+            }
+            switch (status) {
+                case 404:
+                    return "Gemini: model '" + model + "' is not available (404 NOT_FOUND).\n"
+                            + "Likely the model name was renamed or deprecated. Pick a current model from the\n"
+                            + "Settings dropdown - good defaults today are 'gemini-2.5-flash' or 'gemini-2.5-pro'.\n"
+                            + "(Underlying message: " + shorten(message, 200) + ")";
+                case 429:
+                    return "Gemini: rate limit / quota exceeded (429 " + statusName + ")."
+                            + (retry.isEmpty() ? "" : " Retry in ~" + retry + ".") + "\n"
+                            + "On the free tier, gemini-2.5-pro has very low daily limits. Either switch to\n"
+                            + "'gemini-2.5-flash' / 'gemini-2.5-flash-lite' (much higher free quota) or enable\n"
+                            + "billing for your Google AI Studio project.";
+                case 503:
+                    return "Gemini: model is overloaded (503 UNAVAILABLE). The Google API itself reports\n"
+                            + "high demand - simply retry in a few seconds, or switch to a less-busy model\n"
+                            + "(e.g. 'gemini-2.5-flash-lite' or 'gemini-2.0-flash').";
+                case 401:
+                case 403:
+                    return "Gemini: authentication failed (HTTP " + status + "). Re-check your API key in\n"
+                            + "Settings (it must come from https://aistudio.google.com/apikey and the\n"
+                            + "Generative Language API must be enabled for that project).";
+                default:
+                    return "Gemini HTTP " + status + " " + statusName
+                            + (message.isEmpty() ? "" : ": " + shorten(message, 400));
+            }
+        } catch (Exception parseEx) {
+            return "Gemini HTTP " + status + ": " + shorten(body, 600);
+        }
+    }
+
+    private static String shorten(String s, int max) {
+        if (s == null) return "";
+        return s.length() <= max ? s : s.substring(0, max) + "…";
     }
 
     // (callOllama removed: Ollama is now reached via the OpenAI-compatible
