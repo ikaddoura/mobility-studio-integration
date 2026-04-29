@@ -1086,7 +1086,13 @@ public class MatsimCopilotPanel extends JPanel {
 
     private static final String AGENT_SYSTEM_PROMPT =
             "You are MATSim Copilot in AGENT mode. You can call tools to inspect and edit the "
-            + "user's MATSim scenario and to start/stop the simulation:\n"
+            + "user's MATSim scenario and to start/stop the simulation.\n\n"
+            + "TOOL USAGE (CRITICAL):\n"
+            + "  - You MUST call tools by providing a valid JSON object in a `functionCall` part.\n"
+            + "  - DO NOT wrap the call in `print()` or any other code.\n"
+            + "  - DO NOT output markdown code blocks like ```json.\n"
+            + "  - Your entire response must be ONLY the valid tool-calling JSON structure expected by the API.\n\n"
+            + "The available tools are:\n" // Added this for clarity
             + "  - tail_log, read_config, list_dir, read_file: read-only inspection.\n"
             + "  - write_config: overwrite the active config XML (a .bak is created automatically).\n"
             + "  - start_matsim / wait_for_run / stop_matsim: control the running MATSim process.\n\n"

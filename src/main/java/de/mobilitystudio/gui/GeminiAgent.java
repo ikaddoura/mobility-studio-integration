@@ -242,31 +242,73 @@ final class GeminiAgent {
     /** Maximum chars to keep per tool-response part once it has been "consumed". */
     private static final int OLD_TOOL_RESULT_CHARS = 200;
 
-    /**
-     * Walk the conversation and replace every {@code functionResponse.content} that is
-     * older than the most recent tool-result turn with a tiny summary.
-     */
     static void compactOldToolResults(List<ObjectNode> contents) {
+        // --- Find the last tool result turn to preserve it ---
         int lastToolResultsIdx = -1;
         for (int i = contents.size() - 1; i >= 0; i--) {
             if (isToolResultsTurn(contents.get(i))) { lastToolResultsIdx = i; break; }
         }
-        for (int i = 0; i < contents.size(); i++) {
-            if (i == lastToolResultsIdx) continue;
+
+        // --- NEW: Find the last write_config call turn to preserve its arguments ---
+        int lastWriteConfigIdx = -1;
+        for (int i = contents.size() - 1; i >= 0; i--) {
             ObjectNode turn = contents.get(i);
-            if (!isToolResultsTurn(turn)) continue;
-            for (JsonNode part : turn.path("parts")) {
-                if (!part.has("functionResponse")) continue;
-                JsonNode fr = part.get("functionResponse");
-                if (!(fr instanceof ObjectNode)) continue;
-                JsonNode resp = fr.path("response");
-                if (!(resp instanceof ObjectNode respObj)) continue;
-                JsonNode content = respObj.path("content");
-                if (content.has("compacted")) continue; // already compacted
-                ObjectNode compact = M.createObjectNode();
-                compact.put("compacted", true);
-                compact.put("summary", summariseForHistory(content));
-                respObj.set("content", compact);
+            if (isToolCallTurn(turn)) {
+                for (JsonNode part : turn.path("parts")) {
+                    if ("write_config".equals(part.path("functionCall").path("name").asText())) {
+                        lastWriteConfigIdx = i;
+                        break; // Found the most recent one
+                    }
+                }
+            }
+            if (lastWriteConfigIdx != -1) break; // Exit outer loop once found
+        }
+
+        for (int i = 0; i < contents.size(); i++) {
+            ObjectNode turn = contents.get(i);
+
+            // --- Compact old tool RESULTS (functionResponse) ---
+            if (i != lastToolResultsIdx && isToolResultsTurn(turn)) {
+                for (JsonNode part : turn.path("parts")) {
+                    if (!part.has("functionResponse")) continue;
+                    JsonNode fr = part.get("functionResponse");
+                    if (!(fr instanceof ObjectNode)) continue;
+                    JsonNode resp = fr.path("response");
+                    if (!(resp instanceof ObjectNode respObj)) continue;
+                    JsonNode content = respObj.path("content");
+                    if (content.has("compacted")) continue; // already compacted
+                    ObjectNode compact = M.createObjectNode();
+                    compact.put("compacted", true);
+                    compact.put("summary", summariseForHistory(content));
+                    respObj.set("content", compact);
+                }
+            }
+
+            // --- Compact old tool CALLS, specifically for write_config ---
+            if (isToolCallTurn(turn)) {
+                for (JsonNode part : turn.path("parts")) {
+                    if (!part.has("functionCall")) continue;
+                    JsonNode fc = part.get("functionCall");
+                    if (!(fc instanceof ObjectNode fcObj)) continue;
+                    
+                    // Only compact write_config calls that are NOT the most recent one.
+                    if ("write_config".equals(fcObj.path("name").asText()) && i != lastWriteConfigIdx) {
+                        JsonNode args = fcObj.path("args");
+                        if (!(args instanceof ObjectNode argsObj)) continue;
+                        if (!argsObj.has("content") || argsObj.has("compacted")) continue;
+
+                        int len = argsObj.path("content").asText("").length();
+                        String reason = argsObj.path("reason").asText("");
+
+                        ObjectNode compactArgs = M.createObjectNode();
+                        compactArgs.put("compacted", true);
+                        compactArgs.put("summary", String.format("Rewrote config file with %d chars of XML.", len));
+                        if (!reason.isEmpty()) {
+                            compactArgs.put("reason", reason); // Keep the reason for context
+                        }
+                        fcObj.set("args", compactArgs);
+                    }
+                }
             }
         }
     }
@@ -298,5 +340,13 @@ final class GeminiAgent {
     private static String truncate(String s, int max) {
         if (s == null) return "";
         return s.length() <= max ? s : s.substring(0, max) + "…";
+    }
+    
+    private static boolean isToolCallTurn(ObjectNode turn) {
+        if (!"model".equals(turn.path("role").asText())) return false;
+        for (JsonNode part : turn.path("parts")) {
+            if (part.has("functionCall")) return true;
+        }
+        return false;
     }
 }
