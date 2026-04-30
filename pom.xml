@@ -129,6 +129,19 @@
 			<version>3.4.1</version>
 		</dependency>
 
+		<!-- JLama: pure-Java LLM inference engine (Apache-2.0).
+		     Powers the "Embedded (Java)" provider in the MATSim Copilot so the user does
+		     not need to install Ollama or any other external runtime. Model files are
+		     downloaded on first use into ~/.matsim/copilot-models/.
+		     Note: best performance requires the JVM flag (add modules jdk.incubator.vector)
+		     at launch time; without it JLama falls back to scalar arithmetic (slower). -->
+		<dependency>
+			<groupId>com.github.tjake</groupId>
+			<artifactId>jlama-core</artifactId>
+			<version>0.8.4</version>
+			<optional>true</optional>
+		</dependency>
+
 		<!--Dependencies from where stated above to here are added as a service; they can be removed if you don't need them-->
 
 	</dependencies>

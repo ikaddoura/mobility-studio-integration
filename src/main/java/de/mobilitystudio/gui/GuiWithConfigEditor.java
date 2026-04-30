@@ -696,6 +696,7 @@ public class GuiWithConfigEditor extends JFrame {
 		// MATSim Copilot tab – AI assistant that can read the current log/error output
 		MatsimCopilotPanel copilotPanel = new MatsimCopilotPanel(textStdOut, textErrOut);
 		copilotPanel.setConfigFileSupplier(() -> this.configFile);
+		copilotPanel.setRunController(createRunController());
 		tabbedPane.addTab("\uD83E\uDD16 MATSim Copilot", null, copilotPanel, "Chat with an AI assistant that reads your MATSim log");
 
 		getContentPane().setLayout(groupLayout);
@@ -849,6 +850,64 @@ public class GuiWithConfigEditor extends JFrame {
 	    }
 	    // Call the new method to update the GUI from the loaded config
 	    updateGuiWithConfig(config, this.configFile);
+	}
+
+	/**
+	 * Build a {@link MatsimAgentTools.RunController} that lets the MATSim Copilot's agent
+	 * mode start/stop the same MATSim child process as the "Start MATSim" button.
+	 *
+	 * <p>{@link MatsimAgentTools.RunController#waitForFinish(long)} polls the
+	 * {@link #exeRunner} field so the agent loop can block its tool call until the
+	 * simulation has completed (or the timeout was hit).</p>
+	 */
+	private MatsimAgentTools.RunController createRunController() {
+		return new MatsimAgentTools.RunController() {
+
+			@Override public boolean isRunning() {
+				return exeRunner != null;
+			}
+
+			@Override public boolean start() {
+				if (exeRunner != null) return false;
+				if (!btnStartMatsim.isEnabled()) return false;
+				try {
+					SwingUtilities.invokeAndWait(() -> {
+						if (exeRunner == null) startMATSim();
+					});
+				} catch (Exception ex) {
+					log.warn("Could not start MATSim from agent: " + ex.getMessage(), ex);
+					return false;
+				}
+				// Give startMATSim's thread a moment to assign exeRunner.
+				long deadline = System.currentTimeMillis() + 5_000;
+				while (exeRunner == null && System.currentTimeMillis() < deadline) {
+					try { Thread.sleep(50); } catch (InterruptedException ie) {
+						Thread.currentThread().interrupt(); break;
+					}
+				}
+				return exeRunner != null;
+			}
+
+			@Override public void stop() {
+				try {
+					SwingUtilities.invokeAndWait(() -> stopMATSim());
+				} catch (Exception ex) {
+					log.warn("Could not stop MATSim from agent: " + ex.getMessage(), ex);
+				}
+			}
+
+			@Override public int waitForFinish(long timeoutMs) throws InterruptedException {
+				if (exeRunner == null) return -1;
+				long deadline = System.currentTimeMillis() + timeoutMs;
+				while (exeRunner != null && System.currentTimeMillis() < deadline) {
+					Thread.sleep(250);
+				}
+				if (exeRunner != null) return Integer.MIN_VALUE; // timeout
+				// We don't track the actual exit code here; return 0 to mean "completed".
+				// The agent reads stdout/stderr tails via the tool result.
+				return 0;
+			}
+		};
 	}
 
 	private void stopMATSim() {
