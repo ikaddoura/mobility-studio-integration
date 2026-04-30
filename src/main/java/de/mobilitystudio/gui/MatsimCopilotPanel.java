@@ -210,7 +210,9 @@ public class MatsimCopilotPanel extends JPanel {
                         + "             Agent mode supports: Google Gemini, OpenAI, OpenRouter, Ollama (local).\n\n"
                         + "Providers needing no install: \"Embedded (Java)\" runs a small LLM directly in this\n"
                         + "JVM via JLama (downloads ~1 GB model on first use, chat-only).\n\n"
-                        + "Tip: in Chat mode, use the button \"Explain last error\" right after a failed run.\n");
+                        + "Tip: in Chat mode, use the button \"Explain last error\" right after a failed run.\n\n"
+                        + "\u26A0\uFE0F PLEASE NOTE: This is an experimental feature.\n"
+                        + "Watch your token consumption when using paid providers! \u26A0\uFE0F\n");
     }
 
     /**
