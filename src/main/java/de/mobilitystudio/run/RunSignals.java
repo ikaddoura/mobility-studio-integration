@@ -19,6 +19,15 @@
 
 package de.mobilitystudio.run;
 
+import java.io.File;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.UncheckedIOException;
+import java.net.URL;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
+
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.matsim.api.core.v01.Scenario;
@@ -27,9 +36,11 @@ import org.matsim.contrib.signals.builder.Signals;
 import org.matsim.contrib.signals.data.SignalsData;
 import org.matsim.contrib.signals.data.SignalsDataLoader;
 import org.matsim.core.config.Config;
+import org.matsim.core.config.ConfigGroup;
 import org.matsim.core.config.ConfigUtils;
 import org.matsim.core.controler.Controler;
 import org.matsim.core.scenario.ScenarioUtils;
+import org.matsim.core.utils.io.IOUtils;
 
 public final class RunSignals {
 	private static final Logger log = LogManager.getLogger(RunSignals.class);
@@ -53,6 +64,14 @@ public final class RunSignals {
 			config.qsim().setUsingFastCapacityUpdate(false);
 		}
 
+		// the signals contrib reads the files as plain xml streams, i.e. gzipped files need to be decompressed first
+		signalsConfig.setSignalSystemFile(decompressIfGzipped(config, signalsConfig.getSignalSystemFile()));
+		signalsConfig.setSignalGroupsFile(decompressIfGzipped(config, signalsConfig.getSignalGroupsFile()));
+		signalsConfig.setSignalControlFile(decompressIfGzipped(config, signalsConfig.getSignalControlFile()));
+		signalsConfig.setAmberTimesFile(decompressIfGzipped(config, signalsConfig.getAmberTimesFile()));
+		signalsConfig.setIntergreenTimesFile(decompressIfGzipped(config, signalsConfig.getIntergreenTimesFile()));
+		signalsConfig.setConflictingDirectionsFile(decompressIfGzipped(config, signalsConfig.getConflictingDirectionsFile()));
+
 		// --- create the scenario
 		Scenario scenario = ScenarioUtils.loadScenario(config);
 		// load the information about signals data (i.e. fill the SignalsData object) and add it to the scenario as scenario element
@@ -63,5 +82,25 @@ public final class RunSignals {
 		// add the signals module to the simulation such that SignalsData is not only contained in the scenario but also used in the simulation
 		Signals.configure(controler);
 		controler.run();
+	}
+
+	private static String decompressIfGzipped(Config config, String fileName) {
+		if (fileName == null || !fileName.toLowerCase().endsWith(".gz")) {
+			return fileName;
+		}
+		try {
+			URL url = ConfigGroup.getInputFileURL(config.getContext(), fileName);
+			String baseName = new File(url.getPath()).getName();
+			String prefix = baseName.replaceAll("(?i)(\\.xml)?\\.gz$", "");
+			Path tempFile = Files.createTempFile(prefix + "_", ".xml");
+			tempFile.toFile().deleteOnExit();
+			try (InputStream in = IOUtils.getInputStream(url)) {
+				Files.copy(in, tempFile, StandardCopyOption.REPLACE_EXISTING);
+			}
+			log.info("Decompressed " + fileName + " to " + tempFile + ", since the signals contrib cannot read gzipped files.");
+			return tempFile.toAbsolutePath().toString();
+		} catch (IOException e) {
+			throw new UncheckedIOException("Could not decompress signals file " + fileName, e);
+		}
 	}
 }

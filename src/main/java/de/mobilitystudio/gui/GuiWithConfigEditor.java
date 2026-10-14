@@ -19,6 +19,7 @@
 
 package de.mobilitystudio.gui;
 
+import java.awt.Cursor;
 import java.awt.Desktop;
 import java.awt.Image;
 import java.io.BufferedReader;
@@ -27,6 +28,7 @@ import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.InputStreamReader;
 import java.net.URL;
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Optional;
@@ -77,6 +79,8 @@ import com.formdev.flatlaf.extras.FlatSVGIcon;
 import com.formdev.flatlaf.extras.FlatSVGUtils;
 
 import de.mobilitystudio.config.EditorDialogConfig;
+import de.mobilitystudio.config.PopulationBasedConfigDefaults;
+import de.mobilitystudio.config.PopulationBasedConfigDefaults.PopulationScan;
 
 /**
  * A GUI for running MATSim simulations, with an integrated configuration editor.
@@ -347,10 +351,22 @@ public class GuiWithConfigEditor extends JFrame {
 								log.info("Adding " + fileName + " to signal systems config.");
 								signalsGroup.setSignalControlFile(fileName);
 							});
+							// optional files, only used if switched on
+							findFirstExistingFile(parentDir, "amberTimes", "amber_times", "amberTimes_v1.0").ifPresent(fileName -> {
+								log.info("Adding " + fileName + " to signal systems config and switching on amber times.");
+								signalsGroup.setAmberTimesFile(fileName);
+								signalsGroup.setUseAmbertimes(true);
+							});
+							findFirstExistingFile(parentDir, "intergreenTimes", "intergreen_times", "intergreenTimes_v1.0").ifPresent(fileName -> {
+								log.info("Adding " + fileName + " to signal systems config and switching on intergreen times.");
+								signalsGroup.setIntergreenTimesFile(fileName);
+								signalsGroup.setUseIntergreenTimes(true);
+							});
 						}
 					}
 
 					// === STANDARD FILES DETECTION ===
+					boolean strategiesAdded = false;
 					if (parentDir != null && parentDir.isDirectory()) {
 						
 						// Network
@@ -386,9 +402,23 @@ public class GuiWithConfigEditor extends JFrame {
 						
 						// Population
 						String populationFileName = "population.xml.gz";
-						if (new File(parentDir, populationFileName).exists()) {
+						File populationFile = new File(parentDir, populationFileName);
+						if (populationFile.exists()) {
 							log.info("Adding population.xml.gz to config.");
 							newConfig.plans().setInputFile(populationFileName);
+							
+							// Scan the population to set scoring params and default strategies for the activity types, modes and subpopulations found there
+							setCursor(Cursor.getPredefinedCursor(Cursor.WAIT_CURSOR));
+							try {
+								PopulationScan scan = PopulationBasedConfigDefaults.scanPopulation(populationFile, networkFile);
+								PopulationBasedConfigDefaults.addScoringParams(newConfig, scan);
+								PopulationBasedConfigDefaults.addDefaultStrategies(newConfig, scan.getSubpopulations(), scan.getRoutingModes());
+								strategiesAdded = true;
+							} catch (Exception scanException) {
+								log.warn("Could not scan population file. Scoring params and strategies are not derived from the population.", scanException);
+							} finally {
+								setCursor(Cursor.getDefaultCursor());
+							}
 						}
 						
 						// Facilities
@@ -411,6 +441,10 @@ public class GuiWithConfigEditor extends JFrame {
 							log.info("Adding counts.xml.gz to config.");
 							newConfig.counts().setInputFile(countsFileName);
 						}
+					}
+					
+					if (!strategiesAdded) {
+						PopulationBasedConfigDefaults.addDefaultStrategies(newConfig, Collections.emptySet(), Collections.emptySet());
 					}
 					
 					new ConfigWriter(newConfig).write(selectedFile.getAbsolutePath());
