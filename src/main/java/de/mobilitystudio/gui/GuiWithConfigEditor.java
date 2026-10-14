@@ -64,6 +64,7 @@ import org.matsim.contrib.drt.run.DrtConfigGroup;
 import org.matsim.contrib.drt.run.DrtConfigGroup.OperationalScheme;
 import org.matsim.contrib.drt.run.MultiModeDrtConfigGroup;
 import org.matsim.contrib.dvrp.run.DvrpConfigGroup;
+import org.matsim.contrib.signals.SignalSystemsConfigGroup;
 import org.matsim.core.config.Config;
 import org.matsim.core.config.ConfigUtils;
 import org.matsim.core.config.ConfigWriter;
@@ -319,7 +320,36 @@ public class GuiWithConfigEditor extends JFrame {
 						
 						multiModeDrtGroup.addDrtConfigGroup(drtGroup);
 					}
-					
+
+					// === SIGNALS SETUP DETECTION ===
+					boolean isSignalsMode = mainClass != null && mainClass.endsWith("RunSignals");
+
+					if (isSignalsMode) {
+						log.info("Signals mode detected. Adding signal systems config group.");
+
+						// fast flow capacity update does not support signals
+						newConfig.qsim().setUsingFastCapacityUpdate(false);
+
+						SignalSystemsConfigGroup signalsGroup = new SignalSystemsConfigGroup();
+						signalsGroup.setUseSignalSystems(true);
+						newConfig.addModule(signalsGroup);
+
+						if (parentDir != null && parentDir.isDirectory()) {
+							findFirstExistingFile(parentDir, "signalSystems", "signal_systems", "signalSystems_v2.0").ifPresent(fileName -> {
+								log.info("Adding " + fileName + " to signal systems config.");
+								signalsGroup.setSignalSystemFile(fileName);
+							});
+							findFirstExistingFile(parentDir, "signalGroups", "signal_groups", "signalGroups_v2.0").ifPresent(fileName -> {
+								log.info("Adding " + fileName + " to signal systems config.");
+								signalsGroup.setSignalGroupsFile(fileName);
+							});
+							findFirstExistingFile(parentDir, "signalControl", "signal_control", "signalControl_v2.0").ifPresent(fileName -> {
+								log.info("Adding " + fileName + " to signal systems config.");
+								signalsGroup.setSignalControlFile(fileName);
+							});
+						}
+					}
+
 					// === STANDARD FILES DETECTION ===
 					if (parentDir != null && parentDir.isDirectory()) {
 						
@@ -712,6 +742,22 @@ public class GuiWithConfigEditor extends JFrame {
 //		}
 	}
 	
+	/**
+	 * Returns the name of the first file in the given directory that matches one of the
+	 * base names with the extension .xml.gz or .xml.
+	 */
+	private static Optional<String> findFirstExistingFile(File dir, String... baseNames) {
+		for (String baseName : baseNames) {
+			for (String extension : new String[] { ".xml.gz", ".xml" }) {
+				String fileName = baseName + extension;
+				if (new File(dir, fileName).exists()) {
+					return Optional.of(fileName);
+				}
+			}
+		}
+		return Optional.empty();
+	}
+
 	/**
 	 * Tries to detect the Coordinate Reference System (CRS) by scanning the first few
 	 * lines of a MATSim network file without parsing the whole XML.

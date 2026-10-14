@@ -105,6 +105,12 @@
 		</dependency>
 		
 		<dependency>
+			<groupId>org.matsim.contrib</groupId>
+			<artifactId>signals</artifactId>
+			<version>${matsim.version}</version>
+		</dependency>
+		
+		<dependency>
             <groupId>org.matsim.contrib</groupId>
             <artifactId>sbb-extensions</artifactId>
             <version>${matsim.version}</version>

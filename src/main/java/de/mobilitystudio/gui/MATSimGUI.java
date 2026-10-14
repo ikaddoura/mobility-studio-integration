@@ -27,6 +27,7 @@ import de.mobilitystudio.run.RunDRT;
 import de.mobilitystudio.run.RunMatsimDefault;
 import de.mobilitystudio.run.RunRailsim;
 import de.mobilitystudio.run.RunSBBPt;
+import de.mobilitystudio.run.RunSignals;
 
 public class MATSimGUI {
 	private static final Logger log = LogManager.getLogger(Controler.class);
@@ -72,9 +73,12 @@ public class MATSimGUI {
 	    	} else if (setup.equalsIgnoreCase("drt")) {
 	    		GuiWithConfigEditor.show("MATSim GUI for DRT", RunDRT.class );
 	    	
+	    	} else if (setup.equalsIgnoreCase("signals")) {
+	    		GuiWithConfigEditor.show("MATSim GUI for Signals", RunSignals.class );
+	    	
 	    	} else {
 	    		// 1. Log a warning instead of an error, acknowledging it's a custom or unknown setup
-                log.warn("The setup argument '" + setup + "' is not a standard built-in option in the MATSim integration class for MobilityStudio (default, railsim, sbb).");
+                log.warn("The setup argument '" + setup + "' is not a standard built-in option in the MATSim integration class for MobilityStudio (default, railsim, sbb, drt, signals).");
                 log.warn("Launching in CUSTOM mode using the default runner configuration.");
 	    		
 	    		GuiWithConfigEditor.show("MATSim GUI for a default setup (fallback; setup " + setup + " not implemented)", RunMatsimDefault.class );
