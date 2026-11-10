@@ -26,6 +26,7 @@ import org.matsim.core.controler.Controler;
 import de.mobilitystudio.run.RunDRT;
 import de.mobilitystudio.run.RunMatsimDefault;
 import de.mobilitystudio.run.RunRailsim;
+import de.mobilitystudio.run.RunRoadPricing;
 import de.mobilitystudio.run.RunSBBPt;
 import de.mobilitystudio.run.RunSignals;
 
@@ -76,9 +77,12 @@ public class MATSimGUI {
 	    	} else if (setup.equalsIgnoreCase("signals")) {
 	    		GuiWithConfigEditor.show("MATSim GUI for Signals", RunSignals.class );
 	    	
+	    	} else if (setup.equalsIgnoreCase("roadpricing")) {
+	    		GuiWithConfigEditor.show("MATSim GUI for Road Pricing", RunRoadPricing.class );
+	    	
 	    	} else {
 	    		// 1. Log a warning instead of an error, acknowledging it's a custom or unknown setup
-                log.warn("The setup argument '" + setup + "' is not a standard built-in option in the MATSim integration class for MobilityStudio (default, railsim, sbb, drt, signals).");
+                log.warn("The setup argument '" + setup + "' is not a standard built-in option in the MATSim integration class for MobilityStudio (default, railsim, sbb, drt, signals, roadpricing).");
                 log.warn("Launching in CUSTOM mode using the default runner configuration.");
 	    		
 	    		GuiWithConfigEditor.show("MATSim GUI for a default setup (fallback; setup " + setup + " not implemented)", RunMatsimDefault.class );

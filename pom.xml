@@ -9,7 +9,7 @@
 
 	<modelVersion>4.0.0</modelVersion>
 	<artifactId>mobility-studio-integration</artifactId>
-	<version>1.6.0</version>
+	<version>1.7.0</version>
 
 	<name>MobilityStudio Integration</name>
 	<description>MobilityStudio Integration</description>
@@ -107,6 +107,12 @@
 		<dependency>
 			<groupId>org.matsim.contrib</groupId>
 			<artifactId>signals</artifactId>
+			<version>${matsim.version}</version>
+		</dependency>
+
+		<dependency>
+			<groupId>org.matsim.contrib</groupId>
+			<artifactId>roadpricing</artifactId>
 			<version>${matsim.version}</version>
 		</dependency>
 		

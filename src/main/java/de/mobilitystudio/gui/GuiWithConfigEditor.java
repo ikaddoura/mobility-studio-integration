@@ -66,6 +66,7 @@ import org.matsim.contrib.drt.run.DrtConfigGroup;
 import org.matsim.contrib.drt.run.DrtConfigGroup.OperationalScheme;
 import org.matsim.contrib.drt.run.MultiModeDrtConfigGroup;
 import org.matsim.contrib.dvrp.run.DvrpConfigGroup;
+import org.matsim.contrib.roadpricing.RoadPricingConfigGroup;
 import org.matsim.contrib.signals.SignalSystemsConfigGroup;
 import org.matsim.core.config.Config;
 import org.matsim.core.config.ConfigUtils;
@@ -361,6 +362,23 @@ public class GuiWithConfigEditor extends JFrame {
 								log.info("Adding " + fileName + " to signal systems config and switching on intergreen times.");
 								signalsGroup.setIntergreenTimesFile(fileName);
 								signalsGroup.setUseIntergreenTimes(true);
+							});
+						}
+					}
+
+					// === ROAD PRICING SETUP DETECTION ===
+					boolean isRoadPricingMode = mainClass != null && mainClass.endsWith("RunRoadPricing");
+
+					if (isRoadPricingMode) {
+						log.info("Road pricing mode detected. Adding road pricing config group.");
+
+						RoadPricingConfigGroup roadPricingGroup = new RoadPricingConfigGroup();
+						newConfig.addModule(roadPricingGroup);
+
+						if (parentDir != null && parentDir.isDirectory()) {
+							findFirstExistingFile(parentDir, "roadpricing", "roadPricing", "road_pricing", "toll", "tolls", "tollLinks").ifPresent(fileName -> {
+								log.info("Adding " + fileName + " to road pricing config.");
+								roadPricingGroup.setTollLinksFile(fileName);
 							});
 						}
 					}
